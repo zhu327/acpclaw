@@ -34,6 +34,7 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "config.yaml", "Path to YAML config file (optional)")
+	echoMode := flag.Bool("echo", false, "Use EchoAgentService instead of real ACP agent (for testing)")
 	flag.Parse()
 
 	// Load config (fallback to env-only only when file is not found)
@@ -67,36 +68,8 @@ func run() error {
 	}
 	mcpChannelPath := filepath.Join(filepath.Dir(exe), "mcp-channel")
 
-	// State file path (used by service to write, and by mcp-channel to read)
-	statePath := os.Getenv("ACP_TELEGRAM_CHANNEL_STATE_FILE") // TODO 确认下这里后续可以去掉吗, 一个chat id一个acp进程的模式来改造
-	if statePath == "" {
-		statePath = fmt.Sprintf("%s/telegram-acp-bot-mcp-state-%d.json", os.TempDir(), os.Getpid())
-	}
-
-	// MCP server env
-	mcpEnv := map[string]string{ // TODO 重新规划下mcp的模式, 可能不需要这些参数
-		"ACP_TELEGRAM_BOT_TOKEN":          cfg.Telegram.Token,
-		"ACP_TELEGRAM_CHANNEL_STATE_FILE": statePath,
-	}
-	if v := os.Getenv("ACP_TELEGRAM_CHANNEL_ALLOW_PATH"); v != "" {
-		mcpEnv["ACP_TELEGRAM_CHANNEL_ALLOW_PATH"] = v
-		baseDir := os.Getenv("ACP_TELEGRAM_CHANNEL_ALLOWED_BASE_DIR")
-		if baseDir == "" {
-			if resolved, err := filepath.Abs(cfg.Agent.Workspace); err == nil {
-				baseDir = resolved
-			}
-		}
-		if baseDir != "" {
-			mcpEnv["ACP_TELEGRAM_CHANNEL_ALLOWED_BASE_DIR"] = baseDir
-		}
-	}
-
 	// ACP service config
 	agentCmd := strings.Fields(cfg.Agent.Command)
-	mcpEnvVars := make([]acpsdk.EnvVariable, 0, len(mcpEnv)+1)
-	for k, v := range mcpEnv {
-		mcpEnvVars = append(mcpEnvVars, acpsdk.EnvVariable{Name: k, Value: v})
-	}
 	svcCfg := acp.ServiceConfig{
 		AgentCommand:   agentCmd,
 		Workspace:      cfg.Agent.Workspace,
@@ -106,15 +79,21 @@ func run() error {
 		MCPServers: []acpsdk.McpServer{
 			{
 				Stdio: &acpsdk.McpServerStdio{
-					Name:    "telegram-channel",
+					Name:    "hello",
 					Command: mcpChannelPath,
 					Args:    []string{},
-					Env:     mcpEnvVars,
+					Env:     []acpsdk.EnvVariable{},
 				},
 			},
 		},
 	}
-	agentSvc := acp.NewAgentService(svcCfg)
+	var agentSvc acp.AgentService
+	if *echoMode {
+		slog.Info("echo mode enabled: using EchoAgentService")
+		agentSvc = acp.NewEchoAgentService()
+	} else {
+		agentSvc = acp.NewAgentService(svcCfg)
+	}
 
 	// Telegram bot
 	var botOpts []telego.BotOption
@@ -137,8 +116,6 @@ func run() error {
 		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
 		AllowedUsernames: cfg.Telegram.AllowedUsernames,
 		DefaultWorkspace: cfg.Agent.Workspace,
-		MCPStatePath:     statePath,
-		RestartCommand:   cfg.Agent.RestartCommand,
 	}
 	bridge := bot.NewBridge(telegoBot, agentSvc, botCfg)
 

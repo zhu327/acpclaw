@@ -31,7 +31,6 @@ type AgentConfig struct {
 	Command        string `yaml:"command"`
 	Workspace      string `yaml:"workspace"`
 	ConnectTimeout int    `yaml:"connect_timeout"`
-	RestartCommand string `yaml:"restart_command"`
 }
 
 // PermissionsConfig holds permission-related configuration.
@@ -123,9 +122,6 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("ACP_AGENT_COMMAND"); v != "" {
 		cfg.Agent.Command = v
-	}
-	if v := os.Getenv("ACP_RESTART_COMMAND"); v != "" {
-		cfg.Agent.RestartCommand = v
 	}
 	if v := os.Getenv("ACP_CONNECT_TIMEOUT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

@@ -249,8 +249,7 @@ func TestSessionUpdate_ToolCallActivity(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, received, 1)
-	assert.Equal(t, acp.ActivityRead, received[0].Kind)
+	require.Empty(t, received, "tool open no longer emits in_progress")
 
 	status := acpsdk.ToolCallStatusCompleted
 	err = client.SessionUpdate(context.Background(), acpsdk.SessionNotification{
@@ -378,10 +377,9 @@ func TestClient_PendingNonToolTextFlushedAsThink(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Len(t, activities, 2, "expect think block + execute block")
+	require.Len(t, activities, 1, "expect think block only; tool open no longer emits in_progress")
 	assert.Equal(t, acp.ActivityThink, activities[0].Kind)
 	assert.Equal(t, "first thought", activities[0].Text)
-	assert.Equal(t, acp.ActivityExecute, activities[1].Kind)
 }
 
 func TestClient_TrailingNonThinkBlockTextMovesToReply(t *testing.T) {
@@ -483,10 +481,9 @@ func TestSessionUpdate_ToolCompletionEmitsClosedBlockWithText(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Len(t, received, 2, "expect in_progress + completed activity callbacks")
-	assert.Equal(t, "in_progress", received[0].Status)
-	assert.Equal(t, "completed", received[1].Status)
-	assert.Equal(t, "hello from tool", received[1].Text)
+	require.Len(t, received, 1, "expect completed activity callback only")
+	assert.Equal(t, "completed", received[0].Status)
+	assert.Equal(t, "hello from tool", received[0].Text)
 }
 
 func TestSessionUpdate_ToolFailureEmitsClosedBlock(t *testing.T) {
@@ -518,10 +515,9 @@ func TestSessionUpdate_ToolFailureEmitsClosedBlock(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Len(t, received, 2, "expect in_progress + failed activity callbacks")
-	assert.Equal(t, "in_progress", received[0].Status)
-	assert.Equal(t, "failed", received[1].Status)
-	assert.Equal(t, acp.ActivityExecute, received[1].Kind)
+	require.Len(t, received, 1, "expect failed activity callback only")
+	assert.Equal(t, "failed", received[0].Status)
+	assert.Equal(t, acp.ActivityExecute, received[0].Kind)
 }
 
 // Task 6 parity: Python does NOT emit a think block at prompt end for trailing pending non-tool text.
@@ -579,8 +575,7 @@ func TestSessionUpdate_DropsEmptyPendingNonToolTextWhenFlushingBeforeTool(t *tes
 	})
 	require.NoError(t, err)
 
-	require.Len(t, activities, 1, "only execute block; no think block for empty pending")
-	assert.Equal(t, acp.ActivityExecute, activities[0].Kind)
+	require.Empty(t, activities, "no think block for empty pending; tool open no longer emits in_progress")
 }
 
 // Task 6 parity: Think block with text then completed -> reply.activity_blocks contains completed think, reply.text gets post-tool text.

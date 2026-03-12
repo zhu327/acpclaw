@@ -26,7 +26,7 @@ type mockAgentService struct {
 	promptReply        *acp.AgentReply
 	promptErr          error
 	cancelErr          error
-	stopErr            error
+	reconnectErr       error
 	activeSession      *acp.SessionInfo
 	onActivityCalled   bool
 	onPermissionCalled bool
@@ -34,19 +34,19 @@ type mockAgentService struct {
 	lastPromptInput    *acp.PromptInput
 }
 
-func (m *mockAgentService) NewSession(ctx context.Context, chatID int64, workspace string) error {
+func (m *mockAgentService) NewSession(_ context.Context, _ int64, _ string) error {
 	return m.newSessionErr
 }
 
-func (m *mockAgentService) LoadSession(ctx context.Context, chatID int64, sessionID, workspace string) error {
+func (m *mockAgentService) LoadSession(_ context.Context, _ int64, _ string, _ string) error {
 	return m.loadSessionErr
 }
 
-func (m *mockAgentService) ListResumableSessions(ctx context.Context, chatID int64) ([]acp.SessionInfo, error) {
+func (m *mockAgentService) ListSessions(_ context.Context, _ int64) ([]acp.SessionInfo, error) {
 	return m.listSessionsResult, m.listSessionsErr
 }
 
-func (m *mockAgentService) Prompt(ctx context.Context, chatID int64, input acp.PromptInput) (*acp.AgentReply, error) {
+func (m *mockAgentService) Prompt(_ context.Context, _ int64, input acp.PromptInput) (*acp.AgentReply, error) {
 	m.mu.Lock()
 	m.promptCalled = true
 	m.lastPromptInput = &input
@@ -55,29 +55,29 @@ func (m *mockAgentService) Prompt(ctx context.Context, chatID int64, input acp.P
 	return reply, err
 }
 
-func (m *mockAgentService) Cancel(ctx context.Context, chatID int64) error {
+func (m *mockAgentService) Cancel(_ context.Context, _ int64) error {
 	return m.cancelErr
 }
 
-func (m *mockAgentService) Stop(ctx context.Context, chatID int64) error {
-	return m.stopErr
+func (m *mockAgentService) Reconnect(_ context.Context, _ int64, _ string) error {
+	return m.reconnectErr
 }
 
-func (m *mockAgentService) ActiveSession(chatID int64) *acp.SessionInfo {
+func (m *mockAgentService) ActiveSession(_ int64) *acp.SessionInfo {
 	return m.activeSession
 }
 
 func (m *mockAgentService) Shutdown() {}
 
-func (m *mockAgentService) SetActivityHandler(fn func(chatID int64, block acp.ActivityBlock)) {
+func (m *mockAgentService) SetActivityHandler(_ func(chatID int64, block acp.ActivityBlock)) {
 	m.onActivityCalled = true
 }
 
-func (m *mockAgentService) SetPermissionHandler(fn func(chatID int64, req acp.PermissionRequest) <-chan acp.PermissionResponse) {
+func (m *mockAgentService) SetPermissionHandler(_ func(chatID int64, req acp.PermissionRequest) <-chan acp.PermissionResponse) {
 	m.onPermissionCalled = true
 }
 
-func (m *mockAgentService) SetSessionPermissionMode(chatID int64, mode acp.PermissionMode) {}
+func (m *mockAgentService) SetSessionPermissionMode(_ int64, _ acp.PermissionMode) {}
 
 func (m *mockAgentService) getPromptState() (bool, *acp.PromptInput) {
 	m.mu.Lock()
@@ -301,12 +301,12 @@ func TestBuildResumeKeyboard(t *testing.T) {
 	require.NotNil(t, kb)
 	require.Len(t, kb.InlineKeyboard, 3, "should have 3 rows")
 
-	// First row: "0. My Session" (0-based, Python parity)
-	assert.Equal(t, "0. My Session", kb.InlineKeyboard[0][0].Text)
+	// First row: "1. My Session" (1-based, matches /session display)
+	assert.Equal(t, "1. My Session", kb.InlineKeyboard[0][0].Text)
 	assert.Equal(t, "resume|0", kb.InlineKeyboard[0][0].CallbackData)
 
-	// Second row: "1. ws" (falls back to workspace, then session ID)
-	assert.Equal(t, "1. ws", kb.InlineKeyboard[1][0].Text)
+	// Second row: "2. ws" (falls back to workspace, then session ID)
+	assert.Equal(t, "2. ws", kb.InlineKeyboard[1][0].Text)
 	assert.Equal(t, "resume|1", kb.InlineKeyboard[1][0].CallbackData)
 
 	// Third row: truncated to 48 chars
@@ -578,56 +578,23 @@ func TestFormatActivityMessage_Search_RgMatchesLocal(t *testing.T) {
 	assert.Contains(t, got, "**🔎 Querying project**", "rg as word matches local in Python")
 }
 
-func TestParseRestartArgs(t *testing.T) {
-	tests := []struct {
-		name      string
-		args      []string
-		wantIdx   *int
-		wantWS    string
-		wantValid bool
-	}{
-		{"no args", nil, nil, "", true},
-		{"index only", []string{"1"}, intPtr(1), "", true},
-		{"index and workspace", []string{"2", "/tmp/ws"}, intPtr(2), "/tmp/ws", true},
-		{"workspace without index", []string{"/tmp/ws"}, nil, "", false},
-		{"too many args", []string{"1", "2", "3"}, nil, "", false},
-		{"two numbers", []string{"1", "2"}, nil, "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			idx, ws, valid := parseRestartArgs(tt.args)
-			assert.Equal(t, tt.wantValid, valid, "valid")
-			if valid {
-				if tt.wantIdx == nil {
-					assert.Nil(t, idx)
-				} else {
-					require.NotNil(t, idx)
-					assert.Equal(t, *tt.wantIdx, *idx)
-				}
-				assert.Equal(t, tt.wantWS, ws)
-			}
-		})
-	}
-}
-
 func TestParseResumeArgs(t *testing.T) {
 	tests := []struct {
 		name      string
 		args      []string
 		wantIdx   *int
-		wantWS    string
 		wantValid bool
 	}{
-		{"no args", nil, nil, "", true},
-		{"index only", []string{"2"}, intPtr(2), "", true},
-		{"workspace only", []string{"workspace-a"}, nil, "workspace-a", true},
-		{"too many args", []string{"1", "workspace-a"}, nil, "", false},
-		{"blank arg", []string{" "}, nil, "", false},
+		{"no args", nil, nil, true},
+		{"index only", []string{"2"}, intPtr(2), true},
+		{"non-numeric", []string{"workspace-a"}, nil, false},
+		{"too many args", []string{"1", "workspace-a"}, nil, false},
+		{"blank arg", []string{" "}, nil, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			idx, ws, valid := parseResumeArgs(tt.args)
+			idx, valid := parseResumeArgs(tt.args)
 			assert.Equal(t, tt.wantValid, valid, "valid")
 			if !valid {
 				return
@@ -638,46 +605,6 @@ func TestParseResumeArgs(t *testing.T) {
 				require.NotNil(t, idx)
 				assert.Equal(t, *tt.wantIdx, *idx)
 			}
-			assert.Equal(t, tt.wantWS, ws)
-		})
-	}
-}
-
-func TestResolveRestartCommandParts(t *testing.T) {
-	tests := []struct {
-		name           string
-		restartCommand string
-		executable     string
-		argv           []string
-		want           []string
-	}{
-		{
-			name:           "configured restart command wins",
-			restartCommand: "uv run telegram-acp-bot",
-			executable:     "/bin/current",
-			argv:           []string{"/bin/current", "--config", "x.yaml"},
-			want:           []string{"uv", "run", "telegram-acp-bot"},
-		},
-		{
-			name:           "fallback to current executable and args",
-			restartCommand: "",
-			executable:     "/bin/current",
-			argv:           []string{"/bin/current", "--config", "x.yaml"},
-			want:           []string{"/bin/current", "--config", "x.yaml"},
-		},
-		{
-			name:           "empty executable yields nil",
-			restartCommand: "",
-			executable:     "",
-			argv:           []string{},
-			want:           nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := resolveRestartCommandParts(tt.restartCommand, tt.executable, tt.argv)
-			assert.Equal(t, tt.want, got)
 		})
 	}
 }

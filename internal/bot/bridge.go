@@ -17,24 +17,24 @@ import (
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 	"github.com/zhu327/acpclaw/internal/acp"
-	internalmcp "github.com/zhu327/acpclaw/internal/mcp"
 	"github.com/zhu327/acpclaw/internal/util"
 )
 
 // Parity constants: user-visible strings must match Python exactly.
 const (
-	accessDeniedText          = "Access denied for this bot."
-	accessDeniedCallbackText  = "Access denied."   // Callback answer when user not in allowlist (Python parity)
-	permRequestExpiredText    = "Request expired." // Callback answer when action not in available_actions (Python parity)
-	stdioLimitExceededText    = "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` (or `ACP_STDIO_LIMIT`)."
-	noActiveSessionPromptText = "No active session. Send a message again or use /new [workspace]."
-	noResumableSessionsText   = "No resumable sessions found."
-	selectionExpiredText      = "Selection expired." // Resume callback when candidates nil (Python parity)
-	invalidSelectionText      = "Invalid selection." // Resume callback when index out of range (Python parity)
-	busySendNowButtonText     = "Send now"           // Queue message button; no extra emoji (Python parity)
-	busySentText              = "✅ Sent."            // Shown when "Send now" succeeds (callback path only)
-	busyAlreadySentText       = "Already sent."
-	busyCancelFailedText      = "Cancel failed."
+	accessDeniedText              = "Access denied for this bot."
+	accessDeniedCallbackText      = "Access denied."   // Callback answer when user not in allowlist (Python parity)
+	permRequestExpiredText        = "Request expired." // Callback answer when action not in available_actions (Python parity)
+	stdioLimitExceededText        = "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` (or `ACP_STDIO_LIMIT`)."
+	noActiveSessionPromptText     = "No active session. Send a message again or use /new [workspace]."
+	noResumableSessionsText       = "No resumable sessions found."
+	selectionExpiredText          = "Selection expired." // Resume callback when candidates nil (Python parity)
+	invalidSelectionText          = "Invalid selection." // Resume callback when index out of range (Python parity)
+	busySendNowButtonText         = "Send now"           // Queue message button; no extra emoji (Python parity)
+	busySentText                  = "✅ Sent."            // Shown when "Send now" succeeds (callback path only)
+	busyAlreadySentText           = "Already sent."
+	busyCancelFailedText          = "Cancel failed."
+	sessionResumeNotSupportedText = "Session resume is not supported by the current agent."
 )
 
 // buildPermCallbackData builds Python-style callback data: perm|reqID|action
@@ -61,8 +61,6 @@ type Config struct {
 	AllowedUserIDs   []int64
 	AllowedUsernames []string
 	DefaultWorkspace string
-	MCPStatePath     string
-	RestartCommand   string
 }
 
 // Bridge connects Telegram to AgentService.
@@ -71,7 +69,6 @@ type Bridge struct {
 	handler            *th.BotHandler
 	agentSvc           acp.AgentService
 	cfg                Config
-	stateStore         *internalmcp.StateStore // nil when MCPStatePath is empty
 	ctx                context.Context
 	cancel             context.CancelFunc
 	pendingPerms       map[string]chan acp.PermissionResponse
@@ -110,15 +107,10 @@ const permissionRequestTTL = 5 * time.Minute
 // NewBridge creates a new Bridge.
 func NewBridge(bot *telego.Bot, agentSvc acp.AgentService, cfg Config) *Bridge {
 	ctx, cancel := context.WithCancel(context.Background())
-	var stateStore *internalmcp.StateStore
-	if cfg.MCPStatePath != "" {
-		stateStore = internalmcp.NewStateStore(cfg.MCPStatePath)
-	}
 	b := &Bridge{
 		bot:                  bot,
 		agentSvc:             agentSvc,
 		cfg:                  cfg,
-		stateStore:           stateStore,
 		ctx:                  ctx,
 		cancel:               cancel,
 		pendingPerms:         make(map[string]chan acp.PermissionResponse),
@@ -295,28 +287,6 @@ func (b *Bridge) RespondPermission(reqID string, decision acp.PermissionDecision
 		case ch <- acp.PermissionResponse{Decision: decision}:
 		default:
 		}
-	}
-}
-
-func (b *Bridge) registerSession(chatID int64) {
-	if b.stateStore == nil {
-		return
-	}
-	info := b.agentSvc.ActiveSession(chatID)
-	if info == nil {
-		return
-	}
-	if err := b.stateStore.AddSession(info.SessionID, chatID); err != nil {
-		slog.Error("failed to register session in MCP state", "chat_id", chatID, "error", err)
-	}
-}
-
-func (b *Bridge) unregisterSession(chatID int64, sessionID string) {
-	if b.stateStore == nil || sessionID == "" {
-		return
-	}
-	if err := b.stateStore.RemoveSession(sessionID); err != nil {
-		slog.Error("failed to unregister session from MCP state", "chat_id", chatID, "error", err)
 	}
 }
 
@@ -592,7 +562,7 @@ func buildResumeKeyboard(sessions []acp.SessionInfo) *telego.InlineKeyboardMarku
 		if displayName == "" {
 			displayName = s.SessionID
 		}
-		label := fmt.Sprintf("%d. %s", i, displayName)
+		label := fmt.Sprintf("%d. %s", i+1, displayName)
 		if len(label) > 48 {
 			label = label[:48]
 		}

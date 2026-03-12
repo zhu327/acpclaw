@@ -18,15 +18,6 @@ func TestAgentService_ActiveSessionNone(t *testing.T) {
 	assert.Nil(t, svc.ActiveSession(999))
 }
 
-func TestAgentService_Stop_NoSession(t *testing.T) {
-	svc := acp.NewAgentService(acp.ServiceConfig{
-		AgentCommand:   []string{"echo"},
-		ConnectTimeout: time.Second,
-	})
-	err := svc.Stop(context.Background(), 42)
-	assert.ErrorIs(t, err, acp.ErrNoActiveSession)
-}
-
 func TestAgentService_Cancel_NoSession(t *testing.T) {
 	svc := acp.NewAgentService(acp.ServiceConfig{
 		AgentCommand:   []string{"echo"},
@@ -53,11 +44,11 @@ func TestAgentService_SetHandlers(t *testing.T) {
 	assert.False(t, permCalled)
 }
 
-func TestAgentService_ListResumableSessions_NoSession(t *testing.T) {
+func TestAgentService_ListSessions_NoProcess(t *testing.T) {
 	svc := acp.NewAgentService(acp.ServiceConfig{AgentCommand: []string{"echo"}})
-	sessions, err := svc.ListResumableSessions(context.Background(), 42)
-	assert.NoError(t, err)
-	assert.Empty(t, sessions)
+	sessions, err := svc.ListSessions(context.Background(), 42)
+	assert.ErrorIs(t, err, acp.ErrNoActiveProcess)
+	assert.Nil(t, sessions)
 }
 
 func TestBuildContentBlocks_TextOnly(t *testing.T) {

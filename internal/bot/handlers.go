@@ -5,11 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"unicode/utf8"
 
 	"github.com/mymmrac/telego"
@@ -19,116 +16,43 @@ import (
 	"github.com/zhu327/acpclaw/internal/util"
 )
 
-// parseResumeArgs parses /resume arguments. Returns (index, workspace, valid).
-// Valid forms: no args, N only, or workspace only.
-func parseResumeArgs(args []string) (index *int, workspace string, valid bool) {
+// parseResumeArgs parses /resume arguments. Returns (index, valid).
+// Valid forms: no args, or N only.
+func parseResumeArgs(args []string) (index *int, valid bool) {
 	if len(args) == 0 {
-		return nil, "", true
+		return nil, true
 	}
 	if len(args) > 1 {
-		return nil, "", false
+		return nil, false
 	}
 	arg := strings.TrimSpace(args[0])
 	if arg == "" {
-		return nil, "", false
+		return nil, false
 	}
 	if n, err := strconv.Atoi(arg); err == nil {
-		return &n, "", true
+		return &n, true
 	}
-	return nil, arg, true
-}
-
-func normalizeWorkspacePath(path string, base string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	if !filepath.IsAbs(path) && base != "" {
-		path = filepath.Join(base, path)
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		path = abs
-	}
-	return filepath.Clean(path)
-}
-
-// parseRestartArgs parses /restart arguments. Returns (index, workspace, valid).
-// Valid forms: no args, N only, or N workspace.
-func parseRestartArgs(args []string) (index *int, workspace string, valid bool) {
-	if len(args) == 0 {
-		return nil, "", true
-	}
-	if len(args) > 2 {
-		return nil, "", false
-	}
-	var idx *int
-	for _, arg := range args {
-		if n, err := strconv.Atoi(arg); err == nil {
-			if idx != nil {
-				return nil, "", false // two numbers
-			}
-			idx = &n
-		} else {
-			if workspace != "" {
-				return nil, "", false // two workspaces
-			}
-			workspace = arg
-		}
-	}
-	if workspace != "" && idx == nil {
-		return nil, "", false // workspace without index
-	}
-	return idx, workspace, true
-}
-
-func resolveRestartCommandParts(restartCommand string, executablePath string, argv []string) []string {
-	parts := strings.Fields(strings.TrimSpace(restartCommand))
-	if len(parts) > 0 {
-		return parts
-	}
-	if strings.TrimSpace(executablePath) == "" {
-		return nil
-	}
-	fallback := []string{executablePath}
-	if len(argv) > 1 {
-		fallback = append(fallback, argv[1:]...)
-	}
-	return fallback
+	return nil, false
 }
 
 const (
-	helpText = `👋 *Welcome\\!*
+	helpText = `👋 ACP-Claw Bot
 
-*Commands:*
-/start \\- Start the bot
-/help \\- Show this help
-/new \\[workspace\\] \\- Start a new session
-/resume \\[N\\] \\- List or load a session
-/session \\- Show active session
-/cancel \\- Cancel current prompt
-/stop \\- Stop the agent
-/clear \\- Alias for /stop
-/restart \\- Restart the bot process`
+📋 Session Management
+/new [workspace]  — Start a new session
+/session  — List all sessions
+/resume [N]  — Resume a session
+
+⚙️ Controls
+/cancel  — Cancel current prompt
+/reconnect  — Reconnect ACP process
+
+ℹ️ /start  — Start the bot
+ℹ️ /help  — Show this help`
 )
 
 func registerCommandHandlers(b *Bridge) {
 	b.handler.HandleMessage(b.handleCommandMessage, th.AnyCommand())
-}
-
-func (b *Bridge) handleStopOrClear(ctx *th.Context, chatID int64, successMsg, errMsg string) {
-	prev := b.agentSvc.ActiveSession(chatID)
-	if err := b.agentSvc.Stop(ctx.Context(), chatID); err != nil {
-		if errors.Is(err, acp.ErrNoActiveSession) {
-			b.sendText(ctx.Context(), chatID, "No active session. Use /new first.")
-			return
-		}
-		b.sendUserError(ctx.Context(), chatID, errMsg, err)
-		return
-	}
-	if prev != nil {
-		b.unregisterSession(chatID, prev.SessionID)
-	}
-	b.sendText(ctx.Context(), chatID, successMsg)
 }
 
 func (b *Bridge) handleCommandMessage(ctx *th.Context, msg telego.Message) error {
@@ -157,7 +81,7 @@ func (b *Bridge) handleCommand(ctx *th.Context, msg telego.Message, cmd string, 
 	case "start":
 		b.sendText(ctx.Context(), chatID, "👋 Welcome! Use /help for available commands.")
 	case "help":
-		b.sendTextFormatted(ctx.Context(), chatID, helpText)
+		b.sendText(ctx.Context(), chatID, helpText)
 	case "new":
 		workspace := strings.TrimSpace(strings.Join(args, " "))
 		if workspace == "" {
@@ -167,34 +91,74 @@ func (b *Bridge) handleCommand(ctx *th.Context, msg telego.Message, cmd string, 
 			b.sendUserError(ctx.Context(), chatID, "Failed to start session.", err)
 			return nil
 		}
-		b.registerSession(chatID)
 		info := b.agentSvc.ActiveSession(chatID)
 		replyText := "Session started."
 		if info != nil {
 			replyText = fmt.Sprintf("Session started: `%s` in `%s`", escapeMarkdownV2(info.SessionID), escapeMarkdownV2(info.Workspace))
 		}
 		b.sendTextFormatted(ctx.Context(), chatID, replyText)
-	case "resume":
-		resumeIdx, resumeWorkspace, valid := parseResumeArgs(args)
-		if !valid {
-			b.sendText(ctx.Context(), chatID, "Usage: /resume, /resume N, or /resume [workspace]")
-			return nil
-		}
-		sessions, err := b.agentSvc.ListResumableSessions(ctx.Context(), chatID)
+	case "session":
+		sessions, err := b.agentSvc.ListSessions(ctx.Context(), chatID)
 		if err != nil {
-			b.sendUserError(ctx.Context(), chatID, "Failed to list resumable sessions.", err)
+			if errors.Is(err, acp.ErrNoActiveProcess) {
+				b.sendText(ctx.Context(), chatID, "No active session. Use /new first.")
+				return nil
+			}
+			b.sendUserError(ctx.Context(), chatID, "Failed to list sessions.", err)
 			return nil
 		}
-		if resumeWorkspace != "" {
-			target := normalizeWorkspacePath(resumeWorkspace, b.cfg.DefaultWorkspace)
-			filtered := make([]acp.SessionInfo, 0, len(sessions))
-			for _, s := range sessions {
-				if normalizeWorkspacePath(s.Workspace, "") == target {
-					filtered = append(filtered, s)
-				}
-			}
-			sessions = filtered
+		if len(sessions) == 0 {
+			b.sendText(ctx.Context(), chatID, "No sessions found.")
+			return nil
 		}
+		active := b.agentSvc.ActiveSession(chatID)
+		activeID := ""
+		if active != nil {
+			activeID = active.SessionID
+		}
+		var lines []string
+		for i, s := range sessions {
+			display := s.Title
+			if display == "" {
+				display = s.Workspace
+			}
+			if display == "" {
+				display = s.SessionID
+			}
+			marker := ""
+			if s.SessionID == activeID {
+				marker = " \\(active\\)"
+			}
+			lines = append(lines, fmt.Sprintf("%d\\. `%s`%s", i+1, escapeMarkdownV2(display), marker))
+		}
+		b.sendTextFormatted(ctx.Context(), chatID, strings.Join(lines, "\n"))
+	case "resume":
+		resumeIdx, valid := parseResumeArgs(args)
+		if !valid {
+			b.sendText(ctx.Context(), chatID, "Usage: /resume or /resume N")
+			return nil
+		}
+		sessions, err := b.agentSvc.ListSessions(ctx.Context(), chatID)
+		if err != nil {
+			if errors.Is(err, acp.ErrNoActiveProcess) {
+				b.sendText(ctx.Context(), chatID, "No active session. Use /new first.")
+				return nil
+			}
+			b.sendUserError(ctx.Context(), chatID, "Failed to list sessions.", err)
+			return nil
+		}
+		active := b.agentSvc.ActiveSession(chatID)
+		activeID := ""
+		if active != nil {
+			activeID = active.SessionID
+		}
+		filtered := make([]acp.SessionInfo, 0, len(sessions))
+		for _, s := range sessions {
+			if s.SessionID != activeID {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
 		if len(sessions) == 0 {
 			b.sendText(ctx.Context(), chatID, noResumableSessionsText)
 			return nil
@@ -207,18 +171,13 @@ func (b *Bridge) handleCommand(ctx *th.Context, msg telego.Message, cmd string, 
 			}
 			s := sessions[n-1]
 			if err := b.agentSvc.LoadSession(ctx.Context(), chatID, s.SessionID, s.Workspace); err != nil {
-				slog.Warn("resume command: load_session failed, falling back to new_session",
-					"chat_id", chatID, "session_id", s.SessionID, "workspace", s.Workspace, "error", err)
-				if newErr := b.agentSvc.NewSession(ctx.Context(), chatID, s.Workspace); newErr != nil {
-					b.sendUserError(ctx.Context(), chatID, "Failed to resume session.", newErr)
+				if errors.Is(err, acp.ErrLoadSessionNotSupported) {
+					b.sendText(ctx.Context(), chatID, sessionResumeNotSupportedText)
 					return nil
 				}
-				b.registerSession(chatID)
-				b.sendTextFormatted(ctx.Context(), chatID,
-					fmt.Sprintf("⚠️ Could not restore session history\\. New session started in `%s`\\.", escapeMarkdownV2(s.Workspace)))
+				b.sendUserError(ctx.Context(), chatID, "Failed to resume session.", err)
 				return nil
 			}
-			b.registerSession(chatID)
 			b.sendTextFormatted(ctx.Context(), chatID, fmt.Sprintf("Session resumed: `%s` in `%s`", escapeMarkdownV2(s.SessionID), escapeMarkdownV2(s.Workspace)))
 		} else {
 			b.resumeChoicesMu.Lock()
@@ -233,13 +192,6 @@ func (b *Bridge) handleCommand(ctx *th.Context, msg telego.Message, cmd string, 
 				}
 			}
 		}
-	case "session":
-		active := b.agentSvc.ActiveSession(chatID)
-		if active == nil {
-			b.sendText(ctx.Context(), chatID, "No active session. Use /new first.")
-			return nil
-		}
-		b.sendTextFormatted(ctx.Context(), chatID, fmt.Sprintf("Active session workspace: `%s`", escapeMarkdownV2(active.Workspace)))
 	case "cancel":
 		if err := b.agentSvc.Cancel(ctx.Context(), chatID); err != nil {
 			if errors.Is(err, acp.ErrNoActiveSession) {
@@ -250,71 +202,21 @@ func (b *Bridge) handleCommand(ctx *th.Context, msg telego.Message, cmd string, 
 			return nil
 		}
 		b.sendText(ctx.Context(), chatID, "Cancelled current operation.")
-	case "stop":
-		b.handleStopOrClear(ctx, chatID, "Stopped current session.", "Failed to stop current session.")
-		return nil
-	case "clear":
-		b.handleStopOrClear(ctx, chatID, "Cleared current session.", "Failed to clear current session.")
-		return nil
-	case "restart":
-		exePath, exeErr := os.Executable()
-		if exeErr != nil {
-			slog.Warn("failed to resolve executable for restart fallback", "error", exeErr)
+	case "reconnect":
+		workspace := strings.TrimSpace(strings.Join(args, " "))
+		if workspace == "" {
+			workspace = b.cfg.DefaultWorkspace
 		}
-		parts := resolveRestartCommandParts(b.cfg.RestartCommand, exePath, os.Args)
-		if len(parts) == 0 {
-			b.sendText(ctx.Context(), chatID, "⚠️ Restart unavailable: executable path not found.")
+		if err := b.agentSvc.Reconnect(ctx.Context(), chatID, workspace); err != nil {
+			b.sendUserError(ctx.Context(), chatID, "Failed to reconnect.", err)
 			return nil
 		}
-
-		idx, ws, valid := parseRestartArgs(args)
-		if !valid {
-			b.sendText(ctx.Context(), chatID, "Usage: /restart or /restart N [workspace]")
-			return nil
+		info := b.agentSvc.ActiveSession(chatID)
+		ws := workspace
+		if info != nil {
+			ws = info.Workspace
 		}
-
-		if idx != nil {
-			sessions, err := b.agentSvc.ListResumableSessions(ctx.Context(), chatID)
-			if err != nil {
-				b.sendUserError(ctx.Context(), chatID, "Failed to list sessions.", err)
-				return nil
-			}
-			if len(sessions) == 0 {
-				b.sendText(ctx.Context(), chatID, noResumableSessionsText)
-				return nil
-			}
-			n := *idx
-			if n < 1 || n > len(sessions) {
-				b.sendText(ctx.Context(), chatID, "Invalid session number.")
-				return nil
-			}
-			s := sessions[n-1]
-			sessionWS := s.Workspace
-			if ws != "" {
-				sessionWS = normalizeWorkspacePath(ws, b.cfg.DefaultWorkspace)
-			}
-			if err := b.agentSvc.LoadSession(ctx.Context(), chatID, s.SessionID, sessionWS); err != nil {
-				b.sendUserError(ctx.Context(), chatID, "Failed to load session.", err)
-				return nil
-			}
-			b.registerSession(chatID)
-			b.sendText(ctx.Context(), chatID, "🔄 Restart requested. Re-launching...")
-		}
-
-		// Do NOT call agentSvc.Shutdown() before Exec. syscall.Exec only returns on
-		// failure; if it succeeds the process image is replaced and cleanup is moot.
-		// If Exec fails, the service must remain alive so the bot can continue
-		// serving requests — shutting it down first would leave the bot in a
-		// dead state with no way to recover.
-		//
-		// NOTE: If LoadSession succeeded above but Exec fails here, the bot continues
-		// running with the newly loaded session active. This is intentional — the user
-		// can still interact with the loaded session. The old session was stopped by
-		// LoadSession's internal detach; there is no way to restore it at this point.
-		if err := syscall.Exec(parts[0], parts, os.Environ()); err != nil {
-			slog.Error("syscall.Exec failed, bot continues running", "error", err)
-			b.sendText(ctx.Context(), chatID, "⚠️ Restart failed.")
-		}
+		b.sendTextFormatted(ctx.Context(), chatID, fmt.Sprintf("🔄 ACP process reconnected\\. New session started in `%s`\\.", escapeMarkdownV2(ws)))
 	default:
 		b.sendText(ctx.Context(), chatID, "Unknown command. Use /help.")
 	}
@@ -463,7 +365,6 @@ func (b *Bridge) handleResumeCallback(ctx *th.Context, query telego.CallbackQuer
 	if !strings.HasPrefix(data, "resume|") {
 		return nil
 	}
-	// Access check (Python parity: _require_access)
 	if query.From.ID == 0 || !b.IsAllowed(query.From.ID, query.From.Username) {
 		if b.bot != nil {
 			_ = b.bot.AnswerCallbackQuery(ctx.Context(), tu.CallbackQuery(query.ID).WithText(accessDeniedCallbackText))
@@ -487,7 +388,6 @@ func (b *Bridge) handleResumeCallback(ctx *th.Context, query telego.CallbackQuer
 		chatID = query.Message.GetChat().ID
 	}
 	if chatID == 0 {
-		// 私聊中 From.ID 等于 chat ID，作为后备
 		chatID = query.From.ID
 	}
 
@@ -515,36 +415,19 @@ func (b *Bridge) handleResumeCallback(ctx *th.Context, query telego.CallbackQuer
 
 	s := candidates[index]
 	if err := b.agentSvc.LoadSession(ctx.Context(), chatID, s.SessionID, s.Workspace); err != nil {
-		slog.Warn("resume callback: load_session failed, falling back to new_session",
-			"chat_id", chatID, "session_id", s.SessionID, "workspace", s.Workspace, "error", err)
-		// load_session may fail when the agent cannot restore a session from a previous
-		// process (e.g. claude only supports load_session within the same process).
-		// Fall back to new_session in the same workspace so the user at least lands
-		// in the right directory.
-		if newErr := b.agentSvc.NewSession(ctx.Context(), chatID, s.Workspace); newErr != nil {
+		if errors.Is(err, acp.ErrLoadSessionNotSupported) {
 			if b.bot != nil {
-				_ = b.bot.AnswerCallbackQuery(ctx.Context(), tu.CallbackQuery(query.ID).WithText("Failed to resume."))
+				_ = b.bot.AnswerCallbackQuery(ctx.Context(), tu.CallbackQuery(query.ID).WithText(sessionResumeNotSupportedText))
 			}
-			b.sendUserError(ctx.Context(), chatID, "Failed to resume session.", newErr)
+			b.sendText(ctx.Context(), chatID, sessionResumeNotSupportedText)
 			return nil
 		}
-		b.registerSession(chatID)
 		if b.bot != nil {
-			_ = b.bot.AnswerCallbackQuery(ctx.Context(), tu.CallbackQuery(query.ID).WithText("New session started."))
-			if query.Message != nil {
-				_, _ = b.bot.EditMessageText(ctx.Context(), &telego.EditMessageTextParams{
-					ChatID:    tu.ID(chatID),
-					MessageID: query.Message.GetMessageID(),
-					Text:      fmt.Sprintf("Session history unavailable. New session started in: %s", s.Workspace),
-				})
-			}
+			_ = b.bot.AnswerCallbackQuery(ctx.Context(), tu.CallbackQuery(query.ID).WithText("Failed to resume."))
 		}
-		b.sendTextFormatted(ctx.Context(), chatID,
-			fmt.Sprintf("⚠️ Could not restore session history\\. New session started in `%s`\\.", escapeMarkdownV2(s.Workspace)))
+		b.sendUserError(ctx.Context(), chatID, "Failed to resume session.", err)
 		return nil
 	}
-
-	b.registerSession(chatID)
 
 	if b.bot != nil {
 		_ = b.bot.AnswerCallbackQuery(ctx.Context(), tu.CallbackQuery(query.ID).WithText("Session resumed."))
@@ -676,7 +559,6 @@ func (b *Bridge) handleUserMessage(ctx *th.Context, msg telego.Message) error {
 				b.sendUserError(ctx.Context(), chatID, "Failed to start session.", err)
 				return nil
 			}
-			b.registerSession(chatID)
 		}
 	}
 

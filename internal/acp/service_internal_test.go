@@ -244,3 +244,40 @@ func TestResolveFileURIResources_DirectoryPath(t *testing.T) {
 	assert.Empty(t, result.Files)
 	assert.Contains(t, result.Text, "directory, not a file")
 }
+
+func TestIsProcessAlive(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		stopLiveSession(&liveSession{cmd: cmd})
+	})
+
+	assert.True(t, isProcessAlive(cmd.Process), "running process should be alive")
+
+	stopLiveSession(&liveSession{cmd: cmd})
+	assert.False(t, isProcessAlive(cmd.Process), "stopped process should be reported dead")
+}
+
+func TestResolveSessionWorkspace(t *testing.T) {
+	base := t.TempDir()
+	svc := NewAgentService(ServiceConfig{
+		AgentCommand: []string{"echo"},
+		Workspace:    base,
+	})
+
+	current := filepath.Join(base, "current")
+	require.NoError(t, os.MkdirAll(current, 0o755))
+
+	ws, err := svc.resolveSessionWorkspace(current, "")
+	require.NoError(t, err)
+	assert.Equal(t, current, ws, "empty requested workspace should keep current workspace")
+
+	requested := filepath.Join(base, "next")
+	ws, err = svc.resolveSessionWorkspace(current, requested)
+	require.NoError(t, err)
+	assert.Equal(t, requested, ws, "requested workspace should be applied")
+
+	info, statErr := os.Stat(requested)
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir(), "requested workspace directory should exist")
+}

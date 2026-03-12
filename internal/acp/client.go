@@ -360,9 +360,6 @@ func (c *AcpClient) openToolBlock(tc *acpsdk.SessionUpdateToolCall) []*ActivityB
 	c.activeBlock = &block
 	c.activeBlockChunks = nil
 	c.activeToolCallID = tc.ToolCallId
-	if kind != ActivityThink {
-		emitted = append(emitted, &block)
-	}
 	return emitted
 }
 

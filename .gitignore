@@ -2,3 +2,6 @@
 coverage.out
 .cursor
 config.yaml
+docs/plans/*
+acpclaw
+mcp
