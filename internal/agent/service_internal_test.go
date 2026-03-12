@@ -1,4 +1,4 @@
-package acp
+package agent
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhu327/acpclaw/internal/acpclient"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 func TestStopLiveSession_GracefulShutdown(t *testing.T) {
@@ -82,8 +84,8 @@ func TestResolveFileURIResources_ImageFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(imgPath, imgData, 0o644))
 
 	svc := NewAgentService(ServiceConfig{})
-	reply := &AgentReply{
-		Files: []FileData{
+	reply := &domain.AgentReply{
+		Files: []domain.FileData{
 			{Name: "file://" + imgPath, MIMEType: "image/png"},
 		},
 	}
@@ -102,8 +104,8 @@ func TestResolveFileURIResources_TextFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(txtPath, []byte("hello"), 0o644))
 
 	svc := NewAgentService(ServiceConfig{})
-	reply := &AgentReply{
-		Files: []FileData{
+	reply := &domain.AgentReply{
+		Files: []domain.FileData{
 			{Name: "file://" + txtPath, MIMEType: "text/plain"},
 		},
 	}
@@ -122,8 +124,8 @@ func TestResolveFileURIResources_OutsideWorkspace(t *testing.T) {
 	require.NoError(t, os.WriteFile(outsidePath, []byte("secret"), 0o644))
 
 	svc := NewAgentService(ServiceConfig{})
-	reply := &AgentReply{
-		Files: []FileData{
+	reply := &domain.AgentReply{
+		Files: []domain.FileData{
 			{Name: "file://" + outsidePath, MIMEType: "text/plain"},
 		},
 	}
@@ -136,8 +138,8 @@ func TestResolveFileURIResources_OutsideWorkspace(t *testing.T) {
 func TestResolveFileURIResources_NonFileURI(t *testing.T) {
 	workspace := t.TempDir()
 	svc := NewAgentService(ServiceConfig{})
-	reply := &AgentReply{
-		Files: []FileData{
+	reply := &domain.AgentReply{
+		Files: []domain.FileData{
 			{Name: "https://example.com/file.txt", MIMEType: "text/plain", Data: []byte("remote")},
 		},
 	}
@@ -151,8 +153,8 @@ func TestResolveFileURIResources_NonFileURI(t *testing.T) {
 func TestResolveFileURIResources_MissingFile(t *testing.T) {
 	workspace := t.TempDir()
 	svc := NewAgentService(ServiceConfig{})
-	reply := &AgentReply{
-		Files: []FileData{
+	reply := &domain.AgentReply{
+		Files: []domain.FileData{
 			{Name: "file:///nonexistent/path.txt", MIMEType: "text/plain"},
 		},
 	}
@@ -174,7 +176,7 @@ func TestExtractRawConn(t *testing.T) {
 	defer func() { _ = r.Close() }()
 	defer func() { _ = w.Close() }()
 
-	client := NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	csc := acpsdk.NewClientSideConnection(client, w, r)
 	require.NotNil(t, csc)
 
@@ -234,8 +236,8 @@ func TestResolveFileURIResources_DirectoryPath(t *testing.T) {
 	require.NoError(t, os.MkdirAll(subDir, 0o755))
 
 	svc := NewAgentService(ServiceConfig{})
-	reply := &AgentReply{
-		Files: []FileData{
+	reply := &domain.AgentReply{
+		Files: []domain.FileData{
 			{Name: "file://" + subDir, MIMEType: "text/plain"},
 		},
 	}

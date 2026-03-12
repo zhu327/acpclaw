@@ -1,4 +1,4 @@
-package util
+package config
 
 import (
 	"fmt"
@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 )
 
-// GetAcpclawBaseDir 返回 acpclaw 的基础目录 (~/.acpclaw)
-// 如果无法获取用户主目录，使用系统临时目录作为降级方案
+// GetAcpclawBaseDir returns the acpclaw base directory (~/.acpclaw).
+// If the user home directory cannot be resolved, fall back to the system temp directory.
 func GetAcpclawBaseDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -17,31 +17,31 @@ func GetAcpclawBaseDir() string {
 	return filepath.Join(home, ".acpclaw")
 }
 
-// GetAcpclawMemoryDir 返回 memory 数据目录
-// 注意：调用者需要确保目录存在（使用 os.MkdirAll）
+// GetAcpclawMemoryDir returns the memory data directory.
+// Note: callers must ensure the directory exists (use os.MkdirAll).
 func GetAcpclawMemoryDir() string {
 	return filepath.Join(GetAcpclawBaseDir(), "memory")
 }
 
-// GetAcpclawHistoryDir 返回 history 数据目录
-// 注意：调用者需要确保目录存在（使用 os.MkdirAll）
+// GetAcpclawHistoryDir returns the history data directory.
+// Note: callers must ensure the directory exists (use os.MkdirAll).
 func GetAcpclawHistoryDir() string {
 	return filepath.Join(GetAcpclawBaseDir(), "history")
 }
 
-// GetAcpclawCronDir 返回 cron 数据目录
-// 注意：调用者需要确保目录存在（使用 os.MkdirAll）
+// GetAcpclawCronDir returns the cron data directory.
+// Note: callers must ensure the directory exists (use os.MkdirAll).
 func GetAcpclawCronDir() string {
 	return filepath.Join(GetAcpclawBaseDir(), "cron")
 }
 
-// GetAcpclawContextDir 返回 context 文件目录（与 BaseDir 相同）
-// 注意：调用者需要确保目录存在（使用 os.MkdirAll）
+// GetAcpclawContextDir returns the context file directory (same as BaseDir).
+// Note: callers must ensure the directory exists (use os.MkdirAll).
 func GetAcpclawContextDir() string {
 	return GetAcpclawBaseDir()
 }
 
-// EnsureAcpclawMemoryDir 确保 memory 目录存在并返回路径
+// EnsureAcpclawMemoryDir ensures the memory directory exists and returns the path.
 func EnsureAcpclawMemoryDir() (string, error) {
 	dir := GetAcpclawMemoryDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -50,7 +50,7 @@ func EnsureAcpclawMemoryDir() (string, error) {
 	return dir, nil
 }
 
-// EnsureAcpclawHistoryDir 确保 history 目录存在并返回路径
+// EnsureAcpclawHistoryDir ensures the history directory exists and returns the path.
 func EnsureAcpclawHistoryDir() (string, error) {
 	dir := GetAcpclawHistoryDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -59,7 +59,7 @@ func EnsureAcpclawHistoryDir() (string, error) {
 	return dir, nil
 }
 
-// EnsureAcpclawCronDir 确保 cron 目录存在并返回路径
+// EnsureAcpclawCronDir ensures the cron directory exists and returns the path.
 func EnsureAcpclawCronDir() (string, error) {
 	dir := GetAcpclawCronDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {

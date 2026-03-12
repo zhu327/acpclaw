@@ -55,7 +55,7 @@ func memoryListTool() mcplib.Tool {
 }
 
 func memoryReadHandler(
-	svc *memory.Service,
+	svc MemoryStore,
 ) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		id, _ := mcplib.ParseArgument(req, "id", "").(string)
@@ -74,7 +74,7 @@ func memoryReadHandler(
 }
 
 func memorySearchHandler(
-	svc *memory.Service,
+	svc MemoryStore,
 ) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		query, _ := mcplib.ParseArgument(req, "query", "").(string)
@@ -98,7 +98,7 @@ func memorySearchHandler(
 }
 
 func memorySaveHandler(
-	svc *memory.Service,
+	svc MemoryStore,
 ) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		id, _ := mcplib.ParseArgument(req, "id", "").(string)
@@ -145,7 +145,7 @@ func memorySaveHandler(
 }
 
 func memoryListHandler(
-	svc *memory.Service,
+	svc MemoryStore,
 ) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		category, _ := mcplib.ParseArgument(req, "category", "").(string)

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 // Service combines Store and History into a unified memory service.
@@ -74,7 +76,7 @@ func (s *Service) Save(entry MemoryEntry) error {
 	return s.store.Upsert(entry)
 }
 
-// resolveEntryFilePath 根据 category 确定 Markdown 文件路径，并确保目录存在
+// resolveEntryFilePath determines the Markdown file path from category and ensures the directory exists.
 func (s *Service) resolveEntryFilePath(entry MemoryEntry) (string, error) {
 	var relPath string
 	switch entry.Category {
@@ -109,21 +111,15 @@ const (
 	maxTranscriptLenForSummarize = 50000
 )
 
-// Summarizer 接口用于生成会话摘要
-type Summarizer interface {
-	// Summarize 接收转录文本，返回摘要内容
-	Summarize(ctx context.Context, transcript string) (summary string, err error)
-}
-
 // SummarizeSession reads unsummarized history, prompts the agent for a summary, and saves an episode.
-func (s *Service) SummarizeSession(ctx context.Context, chatID string, summarizer Summarizer) error {
+func (s *Service) SummarizeSession(ctx context.Context, chatID string, summarizer domain.Summarizer) error {
 	if summarizer == nil {
 		return nil
 	}
 
 	transcript, err := s.history.ReadUnsummarized(chatID)
 	if err != nil || len(transcript) < minTranscriptLenForSummarize {
-		return nil // 对话太短，跳过
+		return nil // Conversation too short; skip.
 	}
 	if len(transcript) > maxTranscriptLenForSummarize {
 		transcript = transcript[len(transcript)-maxTranscriptLenForSummarize:]
@@ -150,7 +146,7 @@ func (s *Service) SummarizeSession(ctx context.Context, chatID string, summarize
 	return s.history.MarkSummarized(chatID)
 }
 
-// sanitizeForFilename 移除非字母数字字符，用于生成安全的文件名
+// sanitizeForFilename removes non-alphanumeric characters to produce a safe filename.
 func sanitizeForFilename(s string) string {
 	return strings.Map(func(r rune) rune {
 		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {

@@ -4,14 +4,14 @@ import (
 	"log/slog"
 
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/cron"
 	internalmcp "github.com/zhu327/acpclaw/internal/mcp"
 	"github.com/zhu327/acpclaw/internal/memory"
 	"github.com/zhu327/acpclaw/internal/session"
-	"github.com/zhu327/acpclaw/internal/util"
 )
 
-// acpclawPaths 持有 acpclaw 使用的三个目录路径
+// acpclawPaths holds the directory paths used by acpclaw.
 type acpclawPaths struct {
 	memoryDir  string
 	historyDir string
@@ -21,15 +21,16 @@ type acpclawPaths struct {
 
 func getAcpclawPaths() acpclawPaths {
 	return acpclawPaths{
-		memoryDir:  util.GetAcpclawMemoryDir(),
-		historyDir: util.GetAcpclawHistoryDir(),
-		cronDir:    util.GetAcpclawCronDir(),
-		contextDir: util.GetAcpclawContextDir(),
+		memoryDir:  config.GetAcpclawMemoryDir(),
+		historyDir: config.GetAcpclawHistoryDir(),
+		cronDir:    config.GetAcpclawCronDir(),
+		contextDir: config.GetAcpclawContextDir(),
 	}
 }
 
-// initMemoryService 创建 memory.Service，失败时返回 (nil, nil, err)。
-// 成功时返回 (svc, cleanup, nil)，调用方应 defer cleanup() 并在需要时调用 svc.Reindex()。
+// initMemoryService creates a memory.Service; on failure returns (nil, nil, err).
+// On success returns (svc, cleanup, nil); callers should defer cleanup() and call
+// svc.Reindex() when needed.
 func initMemoryService(memoryDir, historyDir string) (*memory.Service, func(), error) {
 	svc, err := memory.NewService(memoryDir, historyDir)
 	if err != nil {

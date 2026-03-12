@@ -1,31 +1,35 @@
-package acp
+package agent
 
 import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 const summarizeDateFormat = "2006-01-02"
 
-// AgentSummarizer 使用 AgentService 生成会话摘要
+// AgentSummarizer uses AgentService to generate session summaries and implements domain.Summarizer.
 type AgentSummarizer struct {
-	agentSvc AgentService
+	agentSvc domain.AgentService
 	chatID   int64
 }
 
-// NewAgentSummarizer 创建基于 Agent 的摘要生成器
-func NewAgentSummarizer(agentSvc AgentService, chatID int64) *AgentSummarizer {
+// NewAgentSummarizer creates an agent-based summarizer.
+func NewAgentSummarizer(agentSvc domain.AgentService, chatID int64) *AgentSummarizer {
 	return &AgentSummarizer{
 		agentSvc: agentSvc,
 		chatID:   chatID,
 	}
 }
 
-// Summarize 生成会话摘要
+var _ domain.Summarizer = (*AgentSummarizer)(nil)
+
+// Summarize generates a session summary and implements domain.Summarizer.
 func (s *AgentSummarizer) Summarize(ctx context.Context, transcript string) (string, error) {
 	prompt := buildSummarizePrompt(transcript)
-	reply, err := s.agentSvc.Prompt(ctx, s.chatID, PromptInput{Text: prompt})
+	reply, err := s.agentSvc.Prompt(ctx, s.chatID, domain.PromptInput{Text: prompt})
 	if err != nil {
 		return "", fmt.Errorf("summarize prompt: %w", err)
 	}

@@ -7,24 +7,45 @@ import (
 	"github.com/zhu327/acpclaw/internal/session"
 )
 
-// NewServer creates a minimal MCP server with a hello tool.
+// MemoryStore defines the interface required by MCP memory tools.
+type MemoryStore interface {
+	Read(id string) (*memory.MemoryEntry, error)
+	Search(query, category string) ([]memory.MemoryEntry, error)
+	Save(entry memory.MemoryEntry) error
+	List(category string) ([]memory.MemoryEntry, error)
+}
+
+// CronStore defines the interface required by MCP cron tools.
+type CronStore interface {
+	AddJob(job cron.Job) error
+	LoadJobs(channel, chatID string) ([]cron.Job, error)
+	DeleteJob(channel, chatID, jobID string) error
+	ListAllJobs() ([]cron.Job, error)
+}
+
+// SessionContextStore defines the interface required by MCP tools to know the active chat context.
+type SessionContextStore interface {
+	Read() (*session.Context, error)
+}
+
+// NewServer creates a minimal MCP server with no tools.
 func NewServer() *server.MCPServer {
 	return NewServerWithMemoryAndCron(nil, nil, nil)
 }
 
-// NewServerWithMemoryAndCron creates an MCP server with hello + memory + cron tools.
+// NewServerWithMemoryAndCron creates an MCP server with memory and cron tools.
 func NewServerWithMemoryAndCron(
-	memorySvc *memory.Service,
-	cronStore *cron.Store,
-	sessionStore *session.Store,
+	memoryStore MemoryStore,
+	cronStore CronStore,
+	sessionStore SessionContextStore,
 ) *server.MCPServer {
 	s := server.NewMCPServer("acpclaw", "1.0.0")
 
-	if memorySvc != nil {
-		s.AddTool(memoryReadTool(), memoryReadHandler(memorySvc))
-		s.AddTool(memorySearchTool(), memorySearchHandler(memorySvc))
-		s.AddTool(memorySaveTool(), memorySaveHandler(memorySvc))
-		s.AddTool(memoryListTool(), memoryListHandler(memorySvc))
+	if memoryStore != nil {
+		s.AddTool(memoryReadTool(), memoryReadHandler(memoryStore))
+		s.AddTool(memorySearchTool(), memorySearchHandler(memoryStore))
+		s.AddTool(memorySaveTool(), memorySaveHandler(memoryStore))
+		s.AddTool(memoryListTool(), memoryListHandler(memoryStore))
 	}
 
 	if cronStore != nil && sessionStore != nil {

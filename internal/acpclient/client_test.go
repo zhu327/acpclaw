@@ -1,4 +1,4 @@
-package acp_test
+package acpclient_test
 
 import (
 	"context"
@@ -7,7 +7,8 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zhu327/acpclaw/internal/acp"
+	"github.com/zhu327/acpclaw/internal/acpclient"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 func TestActivityLabel(t *testing.T) {
@@ -30,7 +31,7 @@ func TestActivityLabel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.kind+"/"+tt.toolName, func(t *testing.T) {
-			assert.Equal(t, tt.want, acp.ActivityLabel(tt.kind, tt.toolName))
+			assert.Equal(t, tt.want, acpclient.ActivityLabel(tt.kind, tt.toolName))
 		})
 	}
 }
@@ -38,31 +39,31 @@ func TestActivityLabel(t *testing.T) {
 func TestInferActivityKind(t *testing.T) {
 	tests := []struct {
 		toolName string
-		want     acp.ActivityKind
+		want     domain.ActivityKind
 	}{
-		{"think", acp.ActivityThink},
-		{"read_file", acp.ActivityRead},
-		{"view_file", acp.ActivityRead},
-		{"edit_file", acp.ActivityEdit},
-		{"str_replace", acp.ActivityEdit},
-		{"write_file", acp.ActivityWrite},
-		{"create_file", acp.ActivityWrite},
-		{"web_search", acp.ActivitySearch},
-		{"find_files", acp.ActivitySearch},
-		{"bash", acp.ActivityExecute},
+		{"think", domain.ActivityThink},
+		{"read_file", domain.ActivityRead},
+		{"view_file", domain.ActivityRead},
+		{"edit_file", domain.ActivityEdit},
+		{"str_replace", domain.ActivityEdit},
+		{"write_file", domain.ActivityWrite},
+		{"create_file", domain.ActivityWrite},
+		{"web_search", domain.ActivitySearch},
+		{"find_files", domain.ActivitySearch},
+		{"bash", domain.ActivityExecute},
 	}
 	for _, tt := range tests {
 		t.Run(tt.toolName, func(t *testing.T) {
-			assert.Equal(t, tt.want, acp.InferActivityKind(tt.toolName))
+			assert.Equal(t, tt.want, acpclient.InferActivityKind(tt.toolName))
 		})
 	}
 }
 
 func TestRequestPermission_ThisTimePrefersAllowOnce(t *testing.T) {
 	title := "Run command"
-	client := acp.NewAcpClient(nil, func(req acp.PermissionRequest) <-chan acp.PermissionResponse {
-		ch := make(chan acp.PermissionResponse, 1)
-		ch <- acp.PermissionResponse{Decision: acp.PermissionThisTime}
+	client := acpclient.NewAcpClient(nil, func(req domain.PermissionRequest) <-chan domain.PermissionResponse {
+		ch := make(chan domain.PermissionResponse, 1)
+		ch <- domain.PermissionResponse{Decision: domain.PermissionThisTime}
 		return ch
 	})
 
@@ -83,9 +84,9 @@ func TestRequestPermission_ThisTimePrefersAllowOnce(t *testing.T) {
 
 func TestRequestPermission_ThisTimeDeniesWhenNoAllowOnce(t *testing.T) {
 	title := "Run command"
-	client := acp.NewAcpClient(nil, func(req acp.PermissionRequest) <-chan acp.PermissionResponse {
-		ch := make(chan acp.PermissionResponse, 1)
-		ch <- acp.PermissionResponse{Decision: acp.PermissionThisTime}
+	client := acpclient.NewAcpClient(nil, func(req domain.PermissionRequest) <-chan domain.PermissionResponse {
+		ch := make(chan domain.PermissionResponse, 1)
+		ch <- domain.PermissionResponse{Decision: domain.PermissionThisTime}
 		return ch
 	})
 
@@ -107,9 +108,9 @@ func TestRequestPermission_ThisTimeDeniesWhenNoAllowOnce(t *testing.T) {
 
 func TestRequestPermission_UnknownDecisionDefaultsToDeny(t *testing.T) {
 	title := "Run command"
-	client := acp.NewAcpClient(nil, func(req acp.PermissionRequest) <-chan acp.PermissionResponse {
-		ch := make(chan acp.PermissionResponse, 1)
-		ch <- acp.PermissionResponse{Decision: "invalid_value"}
+	client := acpclient.NewAcpClient(nil, func(req domain.PermissionRequest) <-chan domain.PermissionResponse {
+		ch := make(chan domain.PermissionResponse, 1)
+		ch <- domain.PermissionResponse{Decision: "invalid_value"}
 		return ch
 	})
 
@@ -130,7 +131,7 @@ func TestRequestPermission_UnknownDecisionDefaultsToDeny(t *testing.T) {
 }
 
 func TestRequestPermission_NoHandlerDefaultsToDeny(t *testing.T) {
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 
 	resp, err := client.RequestPermission(context.Background(), acpsdk.RequestPermissionRequest{
 		Options: []acpsdk.PermissionOption{
@@ -151,7 +152,7 @@ func TestRequestPermission_AvailableActionsFromOptions(t *testing.T) {
 	tests := []struct {
 		name     string
 		options  []acpsdk.PermissionOption
-		wantActs []acp.PermissionDecision
+		wantActs []domain.PermissionDecision
 	}{
 		{
 			name: "allow_always and allow_once -> always, once, deny",
@@ -159,7 +160,7 @@ func TestRequestPermission_AvailableActionsFromOptions(t *testing.T) {
 				{OptionId: "allow-always", Kind: acpsdk.PermissionOptionKindAllowAlways},
 				{OptionId: "allow-once", Kind: acpsdk.PermissionOptionKindAllowOnce},
 			},
-			wantActs: []acp.PermissionDecision{acp.PermissionAlways, acp.PermissionThisTime, acp.PermissionDeny},
+			wantActs: []domain.PermissionDecision{domain.PermissionAlways, domain.PermissionThisTime, domain.PermissionDeny},
 		},
 		{
 			name: "allow_always only -> always, deny",
@@ -167,7 +168,7 @@ func TestRequestPermission_AvailableActionsFromOptions(t *testing.T) {
 				{OptionId: "allow-always", Kind: acpsdk.PermissionOptionKindAllowAlways},
 				{OptionId: "reject-once", Kind: acpsdk.PermissionOptionKindRejectOnce},
 			},
-			wantActs: []acp.PermissionDecision{acp.PermissionAlways, acp.PermissionDeny},
+			wantActs: []domain.PermissionDecision{domain.PermissionAlways, domain.PermissionDeny},
 		},
 		{
 			name: "allow_once only -> once, deny",
@@ -175,23 +176,23 @@ func TestRequestPermission_AvailableActionsFromOptions(t *testing.T) {
 				{OptionId: "allow-once", Kind: acpsdk.PermissionOptionKindAllowOnce},
 				{OptionId: "reject-once", Kind: acpsdk.PermissionOptionKindRejectOnce},
 			},
-			wantActs: []acp.PermissionDecision{acp.PermissionThisTime, acp.PermissionDeny},
+			wantActs: []domain.PermissionDecision{domain.PermissionThisTime, domain.PermissionDeny},
 		},
 		{
 			name: "deny only -> deny",
 			options: []acpsdk.PermissionOption{
 				{OptionId: "reject-once", Kind: acpsdk.PermissionOptionKindRejectOnce},
 			},
-			wantActs: []acp.PermissionDecision{acp.PermissionDeny},
+			wantActs: []domain.PermissionDecision{domain.PermissionDeny},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var captured acp.PermissionRequest
-			client := acp.NewAcpClient(nil, func(req acp.PermissionRequest) <-chan acp.PermissionResponse {
+			var captured domain.PermissionRequest
+			client := acpclient.NewAcpClient(nil, func(req domain.PermissionRequest) <-chan domain.PermissionResponse {
 				captured = req
-				ch := make(chan acp.PermissionResponse, 1)
-				ch <- acp.PermissionResponse{Decision: acp.PermissionDeny}
+				ch := make(chan domain.PermissionResponse, 1)
+				ch <- domain.PermissionResponse{Decision: domain.PermissionDeny}
 				return ch
 			})
 			_, err := client.RequestPermission(context.Background(), acpsdk.RequestPermissionRequest{
@@ -206,7 +207,7 @@ func TestRequestPermission_AvailableActionsFromOptions(t *testing.T) {
 }
 
 func TestSessionUpdate_TextChunks(t *testing.T) {
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	client.StartCapture()
 
 	// Agent includes spaces in chunks; no auto-spacing (REVISED APPROACH)
@@ -233,8 +234,8 @@ func TestSessionUpdate_TextChunks(t *testing.T) {
 }
 
 func TestSessionUpdate_ToolCallActivity(t *testing.T) {
-	var received []acp.ActivityBlock
-	client := acp.NewAcpClient(func(b acp.ActivityBlock) {
+	var received []domain.ActivityBlock
+	client := acpclient.NewAcpClient(func(b domain.ActivityBlock) {
 		received = append(received, b)
 	}, nil)
 	client.StartCapture()
@@ -269,7 +270,7 @@ func TestSessionUpdate_ToolCallActivity(t *testing.T) {
 
 func TestAppendText_PunctuationSpacing(t *testing.T) {
 	// Auto-spacing: after sentence punctuation, insert space before alphanumeric. "Created (deleted)." + "Done." → "Created (deleted). Done."
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	client.StartCapture()
 
 	err := client.SessionUpdate(context.Background(), acpsdk.SessionNotification{
@@ -296,7 +297,7 @@ func TestAppendText_PunctuationSpacing(t *testing.T) {
 
 func TestAppendText_NoSpaceInSemver(t *testing.T) {
 	// "Version 10." + "1.2" → "Version 10.1.2" (no space in version numbers)
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	client.StartCapture()
 
 	err := client.SessionUpdate(context.Background(), acpsdk.SessionNotification{
@@ -323,7 +324,7 @@ func TestAppendText_NoSpaceInSemver(t *testing.T) {
 
 func TestAppendText_NoSpaceMidWord(t *testing.T) {
 	// "Sil" + "ence" → "Silence" (no space between mid-word chunks)
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	client.StartCapture()
 
 	err := client.SessionUpdate(context.Background(), acpsdk.SessionNotification{
@@ -349,8 +350,8 @@ func TestAppendText_NoSpaceMidWord(t *testing.T) {
 }
 
 func TestClient_PendingNonToolTextFlushedAsThink(t *testing.T) {
-	var activities []acp.ActivityBlock
-	client := acp.NewAcpClient(func(b acp.ActivityBlock) {
+	var activities []domain.ActivityBlock
+	client := acpclient.NewAcpClient(func(b domain.ActivityBlock) {
 		activities = append(activities, b)
 	}, nil)
 	client.StartCapture()
@@ -378,12 +379,12 @@ func TestClient_PendingNonToolTextFlushedAsThink(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, activities, 1, "expect think block only; tool open no longer emits in_progress")
-	assert.Equal(t, acp.ActivityThink, activities[0].Kind)
+	assert.Equal(t, domain.ActivityThink, activities[0].Kind)
 	assert.Equal(t, "first thought", activities[0].Text)
 }
 
 func TestClient_TrailingNonThinkBlockTextMovesToReply(t *testing.T) {
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	client.StartCapture()
 
 	// Open execute block
@@ -417,7 +418,7 @@ func TestClient_TrailingNonThinkBlockTextMovesToReply(t *testing.T) {
 }
 
 func TestSessionUpdate_ImageContent(t *testing.T) {
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	client.StartCapture()
 
 	err := client.SessionUpdate(context.Background(), acpsdk.SessionNotification{
@@ -436,8 +437,8 @@ func TestSessionUpdate_ImageContent(t *testing.T) {
 }
 
 func TestSessionUpdate_ToolCompletionEmitsClosedBlockWithText(t *testing.T) {
-	var received []acp.ActivityBlock
-	client := acp.NewAcpClient(func(b acp.ActivityBlock) {
+	var received []domain.ActivityBlock
+	client := acpclient.NewAcpClient(func(b domain.ActivityBlock) {
 		received = append(received, b)
 	}, nil)
 	client.StartCapture()
@@ -487,8 +488,8 @@ func TestSessionUpdate_ToolCompletionEmitsClosedBlockWithText(t *testing.T) {
 }
 
 func TestSessionUpdate_ToolFailureEmitsClosedBlock(t *testing.T) {
-	var received []acp.ActivityBlock
-	client := acp.NewAcpClient(func(b acp.ActivityBlock) {
+	var received []domain.ActivityBlock
+	client := acpclient.NewAcpClient(func(b domain.ActivityBlock) {
 		received = append(received, b)
 	}, nil)
 	client.StartCapture()
@@ -517,14 +518,14 @@ func TestSessionUpdate_ToolFailureEmitsClosedBlock(t *testing.T) {
 
 	require.Len(t, received, 1, "expect failed activity callback only")
 	assert.Equal(t, "failed", received[0].Status)
-	assert.Equal(t, acp.ActivityExecute, received[0].Kind)
+	assert.Equal(t, domain.ActivityExecute, received[0].Kind)
 }
 
 // Task 6 parity: Python does NOT emit a think block at prompt end for trailing pending non-tool text.
 // The text goes directly to reply.Text. Only flush-as-think happens when a tool block opens (before the tool).
 func TestFinishCapture_NoThinkBlockForTrailingPendingNonToolText(t *testing.T) {
-	var activities []acp.ActivityBlock
-	client := acp.NewAcpClient(func(b acp.ActivityBlock) {
+	var activities []domain.ActivityBlock
+	client := acpclient.NewAcpClient(func(b domain.ActivityBlock) {
 		activities = append(activities, b)
 	}, nil)
 	client.StartCapture()
@@ -547,8 +548,8 @@ func TestFinishCapture_NoThinkBlockForTrailingPendingNonToolText(t *testing.T) {
 
 // Task 6 parity: Empty/whitespace-only pending non-tool text should not emit a think block when flushed before tool.
 func TestSessionUpdate_DropsEmptyPendingNonToolTextWhenFlushingBeforeTool(t *testing.T) {
-	var activities []acp.ActivityBlock
-	client := acp.NewAcpClient(func(b acp.ActivityBlock) {
+	var activities []domain.ActivityBlock
+	client := acpclient.NewAcpClient(func(b domain.ActivityBlock) {
 		activities = append(activities, b)
 	}, nil)
 	client.StartCapture()
@@ -580,7 +581,7 @@ func TestSessionUpdate_DropsEmptyPendingNonToolTextWhenFlushingBeforeTool(t *tes
 
 // Task 6 parity: Think block with text then completed -> reply.activity_blocks contains completed think, reply.text gets post-tool text.
 func TestSessionUpdate_ThinkBlockCompletedThenPostToolTextInReply(t *testing.T) {
-	client := acp.NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	client.StartCapture()
 
 	// Think block
@@ -628,7 +629,7 @@ func TestSessionUpdate_ThinkBlockCompletedThenPostToolTextInReply(t *testing.T) 
 	reply := client.FinishCapture()
 	assert.Equal(t, "final answer", reply.Text)
 	require.Len(t, reply.Activities, 1)
-	assert.Equal(t, acp.ActivityThink, reply.Activities[0].Kind)
+	assert.Equal(t, domain.ActivityThink, reply.Activities[0].Kind)
 	assert.Equal(t, "completed", reply.Activities[0].Status)
 	assert.Equal(t, "draft plan", reply.Activities[0].Text)
 }

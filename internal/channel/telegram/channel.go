@@ -11,9 +11,7 @@ import (
 	"github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
-	"github.com/zhu327/acpclaw/internal/acp"
-	"github.com/zhu327/acpclaw/internal/channel"
-	"github.com/zhu327/acpclaw/internal/dispatcher"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 // ChannelConfig holds Telegram-specific configuration.
@@ -26,20 +24,20 @@ type ChannelConfig struct {
 type CallbackHandlers struct {
 	OnPermission   func(reqID string, decision string)
 	OnBusySendNow  func(chatID int64, token string) (ok bool, err error)
-	OnResumeChoice func(ctx context.Context, chatID int64, index int) (*acp.SessionInfo, error)
+	OnResumeChoice func(ctx context.Context, chatID int64, index int) (*domain.SessionInfo, error)
 }
 
-// TelegramChannel implements channel.Channel for the Telegram platform.
+// TelegramChannel implements domain.Channel for the Telegram platform.
 type TelegramChannel struct {
 	bot              *telego.Bot
 	handler          *th.BotHandler
 	cfg              ChannelConfig
 	updates          <-chan telego.Update
 	callbacks        CallbackHandlers
-	allowlistChecker dispatcher.AllowlistChecker
+	allowlistChecker domain.AllowlistChecker
 }
 
-var _ channel.Channel = (*TelegramChannel)(nil)
+var _ domain.Channel = (*TelegramChannel)(nil)
 
 // NewTelegramChannel creates a new TelegramChannel.
 func NewTelegramChannel(
@@ -47,7 +45,7 @@ func NewTelegramChannel(
 	updates <-chan telego.Update,
 	cfg ChannelConfig,
 	callbacks CallbackHandlers,
-	allowlistChecker dispatcher.AllowlistChecker,
+	allowlistChecker domain.AllowlistChecker,
 ) *TelegramChannel {
 	return &TelegramChannel{
 		bot:              bot,
@@ -62,7 +60,7 @@ func NewTelegramChannel(
 func (c *TelegramChannel) Kind() string { return "telegram" }
 
 // Start registers handlers and begins processing updates.
-func (c *TelegramChannel) Start(handler channel.MessageHandler) error {
+func (c *TelegramChannel) Start(handler domain.MessageHandler) error {
 	var err error
 	c.handler, err = th.NewBotHandler(c.bot, c.updates)
 	if err != nil {
@@ -112,7 +110,7 @@ func (c *TelegramChannel) Stop() error {
 }
 
 // Send sends an OutboundMessage to the given chatID.
-func (c *TelegramChannel) Send(chatID string, msg channel.OutboundMessage) error {
+func (c *TelegramChannel) Send(chatID string, msg domain.OutboundMessage) error {
 	id, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid chatID %q: %w", chatID, err)
@@ -120,13 +118,13 @@ func (c *TelegramChannel) Send(chatID string, msg channel.OutboundMessage) error
 	return sendOutbound(c.bot, id, msg)
 }
 
-func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) channel.InboundMessage {
+func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) domain.InboundMessage {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		text = strings.TrimSpace(msg.Caption)
 	}
 
-	inbound := channel.InboundMessage{
+	inbound := domain.InboundMessage{
 		ID:          strconv.Itoa(msg.MessageID),
 		ChatID:      strconv.FormatInt(msg.Chat.ID, 10),
 		Text:        text,
@@ -140,7 +138,7 @@ func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) ch
 	if len(msg.Photo) > 0 {
 		photo := msg.Photo[len(msg.Photo)-1]
 		if data, err := c.downloadFile(ctx.Context(), photo.FileID); err == nil {
-			inbound.Attachments = append(inbound.Attachments, channel.Attachment{
+			inbound.Attachments = append(inbound.Attachments, domain.Attachment{
 				Data:      data,
 				MediaType: "image",
 				FileName:  "photo.jpg",
@@ -156,7 +154,7 @@ func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) ch
 			if strings.HasPrefix(msg.Document.MimeType, "image/") {
 				mediaType = "image"
 			}
-			inbound.Attachments = append(inbound.Attachments, channel.Attachment{
+			inbound.Attachments = append(inbound.Attachments, domain.Attachment{
 				Data:      data,
 				MediaType: mediaType,
 				FileName:  msg.Document.FileName,
@@ -325,7 +323,7 @@ func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.Cal
 			Text:      fmt.Sprintf("Resumed session: %s\nWorkspace: %s", s.SessionID, s.Workspace),
 		})
 	}
-	sendOutbound(c.bot, chatID, channel.OutboundMessage{ //nolint:errcheck
+	sendOutbound(c.bot, chatID, domain.OutboundMessage{ //nolint:errcheck
 		Text: fmt.Sprintf("Session resumed: `%s` in `%s`", s.SessionID, s.Workspace),
 	})
 	return nil
@@ -356,7 +354,7 @@ func (c *TelegramChannel) sendPlainText(chatID int64, text string) {
 }
 
 // sendOutbound sends an OutboundMessage to a Telegram chat.
-func sendOutbound(bot *telego.Bot, chatID int64, msg channel.OutboundMessage) error {
+func sendOutbound(bot *telego.Bot, chatID int64, msg domain.OutboundMessage) error {
 	_ = time.Now() // keep time import used
 
 	for _, img := range msg.Images {

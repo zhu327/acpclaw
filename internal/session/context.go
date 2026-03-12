@@ -12,20 +12,20 @@ import (
 
 const chatContextFileName = "last-context.json"
 
-// Context 存储当前会话的上下文信息
+// Context stores metadata about the current chat session.
 type Context struct {
 	Channel   string    `json:"channel"`
 	ChatID    string    `json:"chatId"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// Store 负责会话上下文的持久化
+// Store persists the chat context.
 type Store struct {
 	contextDir string
 	writeMu    sync.Mutex
 }
 
-// NewStore 创建会话上下文存储
+// NewStore creates a context store.
 func NewStore(contextDir string) *Store {
 	return &Store{
 		contextDir: contextDir,
@@ -36,8 +36,8 @@ func (s *Store) contextFilePath() string {
 	return filepath.Join(s.contextDir, chatContextFileName)
 }
 
-// Write 原子写入最近活跃的 chat 上下文（temp + rename 模式）
-// 使用互斥锁防止多个并发调用时的竞态条件
+// Write atomically writes the most recent chat context (temp + rename).
+// A mutex prevents races across concurrent writes.
 func (s *Store) Write(channel, chatID string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -85,7 +85,7 @@ func (s *Store) Write(channel, chatID string) error {
 	return nil
 }
 
-// Read 读取最近的 chat 上下文
+// Read loads the most recent chat context.
 func (s *Store) Read() (*Context, error) {
 	data, err := os.ReadFile(s.contextFilePath())
 	if err != nil {

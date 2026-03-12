@@ -1,4 +1,4 @@
-package util
+package config
 
 import (
 	"os"
@@ -10,12 +10,12 @@ import (
 func TestGetAcpclawBaseDir(t *testing.T) {
 	baseDir := GetAcpclawBaseDir()
 
-	// 验证包含 .acpclaw
+	// Verify it contains .acpclaw.
 	if !strings.HasSuffix(baseDir, ".acpclaw") {
 		t.Errorf("expected baseDir to end with .acpclaw, got: %s", baseDir)
 	}
 
-	// 验证是绝对路径
+	// Verify it is an absolute path.
 	if !filepath.IsAbs(baseDir) {
 		t.Errorf("expected absolute path, got: %s", baseDir)
 	}
@@ -55,7 +55,7 @@ func TestGetAcpclawContextDir(t *testing.T) {
 	contextDir := GetAcpclawContextDir()
 	baseDir := GetAcpclawBaseDir()
 
-	// ContextDir 应该与 BaseDir 相同
+	// ContextDir should match BaseDir.
 	if contextDir != baseDir {
 		t.Errorf("expected contextDir to equal baseDir, got %s vs %s", contextDir, baseDir)
 	}
@@ -64,7 +64,7 @@ func TestGetAcpclawContextDir(t *testing.T) {
 func TestAcpclawPathsConsistency(t *testing.T) {
 	baseDir := GetAcpclawBaseDir()
 
-	// 所有子目录应该都是 baseDir 的子目录
+	// All subdirectories should be under baseDir.
 	paths := map[string]string{
 		"memory":  GetAcpclawMemoryDir(),
 		"history": GetAcpclawHistoryDir(),

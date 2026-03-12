@@ -12,10 +12,17 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/zhu327/acpclaw/internal/acp"
-	"github.com/zhu327/acpclaw/internal/channel"
-	"github.com/zhu327/acpclaw/internal/memory"
+	"github.com/zhu327/acpclaw/internal/agent"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
+
+// MemoryService is the interface dispatcher needs from the memory subsystem.
+// By depending on an interface rather than *memory.Service, dispatcher is decoupled
+// from the concrete memory infrastructure.
+type MemoryService interface {
+	AppendHistory(chatID, role, text string) error
+	SummarizeSession(ctx context.Context, chatID string, summarizer domain.Summarizer) error
+}
 
 // Config holds Dispatcher configuration.
 type Config struct {
@@ -26,7 +33,7 @@ type Config struct {
 }
 
 type pendingPrompt struct {
-	input        acp.PromptInput
+	input        domain.PromptInput
 	chatID       int64
 	token        string
 	notifyMsgID  int
@@ -34,7 +41,7 @@ type pendingPrompt struct {
 }
 
 type pendingPermission struct {
-	ch     chan acp.PermissionResponse
+	ch     chan domain.PermissionResponse
 	chatID int64
 }
 
@@ -42,7 +49,7 @@ const permissionRequestTTL = 5 * time.Minute
 
 // Dispatcher routes inbound messages to the AgentService.
 type Dispatcher struct {
-	agentSvc acp.AgentService
+	agentSvc domain.AgentService
 	cfg      Config
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -55,15 +62,15 @@ type Dispatcher struct {
 	pendingMu     sync.Mutex
 
 	pendingPerms  sync.Map // reqID -> *pendingPermission
-	permActions   map[string][]acp.PermissionDecision
+	permActions   map[string][]domain.PermissionDecision
 	permActionsMu sync.Mutex
 
-	pendingResumeChoices map[int64][]acp.SessionInfo
+	pendingResumeChoices map[int64][]domain.SessionInfo
 	resumeChoicesMu      sync.Mutex
 
-	activeResponders sync.Map // chatID (int64) -> channel.Responder
+	activeResponders sync.Map // chatID (int64) -> domain.Responder
 
-	memorySvc *memory.Service
+	memorySvc MemoryService
 }
 
 // New creates a new Dispatcher.
@@ -73,9 +80,9 @@ func New(cfg Config) *Dispatcher {
 		cfg:                  cfg,
 		ctx:                  ctx,
 		cancel:               cancel,
-		permActions:          make(map[string][]acp.PermissionDecision),
+		permActions:          make(map[string][]domain.PermissionDecision),
 		pendingByChat:        make(map[int64]*pendingPrompt),
-		pendingResumeChoices: make(map[int64][]acp.SessionInfo),
+		pendingResumeChoices: make(map[int64][]domain.SessionInfo),
 	}
 }
 
@@ -85,12 +92,12 @@ func (d *Dispatcher) Shutdown() {
 }
 
 // SetMemoryService sets the MemoryService for the Dispatcher.
-func (d *Dispatcher) SetMemoryService(svc *memory.Service) {
+func (d *Dispatcher) SetMemoryService(svc MemoryService) {
 	d.memorySvc = svc
 }
 
 // SetAgentService sets the AgentService for the Dispatcher.
-func (d *Dispatcher) SetAgentService(svc acp.AgentService) {
+func (d *Dispatcher) SetAgentService(svc domain.AgentService) {
 	d.agentSvc = svc
 	if svc != nil {
 		d.setupCallbacks()
@@ -121,7 +128,7 @@ func randomToken() string {
 }
 
 // Handle is the MessageHandler registered on each Channel.
-func (d *Dispatcher) Handle(msg channel.InboundMessage, resp channel.Responder) {
+func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 	if cmd := parseCommand(msg.Text); cmd != "" {
 		d.execCommand(cmd, msg, resp)
 		return
@@ -134,7 +141,7 @@ func (d *Dispatcher) Handle(msg channel.InboundMessage, resp channel.Responder) 
 	}
 
 	if d.agentSvc == nil {
-		resp.Reply(channel.OutboundMessage{Text: "Agent not configured."}) //nolint:errcheck
+		resp.Reply(domain.OutboundMessage{Text: "Agent not configured."}) //nolint:errcheck
 		return
 	}
 
@@ -149,7 +156,7 @@ func (d *Dispatcher) Handle(msg channel.InboundMessage, resp channel.Responder) 
 			}
 			if err := d.agentSvc.NewSession(d.ctx, chatID, workspace); err != nil {
 				startLock.Unlock()
-				resp.Reply(channel.OutboundMessage{Text: "❌ Failed to start session."}) //nolint:errcheck
+				resp.Reply(domain.OutboundMessage{Text: "❌ Failed to start session."}) //nolint:errcheck
 				return
 			}
 		}
@@ -173,7 +180,7 @@ func (d *Dispatcher) Handle(msg channel.InboundMessage, resp channel.Responder) 
 	d.runPromptLoop(d.ctx, chatID, input, resp)
 }
 
-func (d *Dispatcher) queueBusyPrompt(chatID int64, input acp.PromptInput, resp channel.Responder, replyToMsgID int) {
+func (d *Dispatcher) queueBusyPrompt(chatID int64, input domain.PromptInput, resp domain.Responder, replyToMsgID int) {
 	token := randomToken()
 
 	d.pendingMu.Lock()
@@ -206,7 +213,7 @@ func (d *Dispatcher) popPending(chatID int64) *pendingPrompt {
 	return p
 }
 
-func (d *Dispatcher) runPromptLoop(ctx context.Context, chatID int64, input acp.PromptInput, resp channel.Responder) {
+func (d *Dispatcher) runPromptLoop(ctx context.Context, chatID int64, input domain.PromptInput, resp domain.Responder) {
 	for {
 		d.appendUserToHistory(chatID, input.Text)
 
@@ -231,7 +238,7 @@ func (d *Dispatcher) appendUserToHistory(chatID int64, text string) {
 	}
 }
 
-func (d *Dispatcher) handlePromptResult(chatID int64, resp channel.Responder, reply *acp.AgentReply, err error) {
+func (d *Dispatcher) handlePromptResult(chatID int64, resp domain.Responder, reply *domain.AgentReply, err error) {
 	if err != nil {
 		if _, wasCancelled := d.cancelRequested.LoadAndDelete(chatID); !wasCancelled {
 			d.sendPromptError(chatID, resp, err)
@@ -247,42 +254,47 @@ func (d *Dispatcher) handlePromptResult(chatID int64, resp channel.Responder, re
 	}
 }
 
-func (d *Dispatcher) hasReplyContent(reply *acp.AgentReply) bool {
+func (d *Dispatcher) hasReplyContent(reply *domain.AgentReply) bool {
 	return reply != nil && (reply.Text != "" || len(reply.Images) > 0 || len(reply.Files) > 0)
 }
 
-func (d *Dispatcher) sendPromptError(chatID int64, resp channel.Responder, err error) {
+func (d *Dispatcher) sendPromptError(chatID int64, resp domain.Responder, err error) {
 	switch {
-	case errors.Is(err, acp.ErrAgentOutputLimitExceeded):
-		resp.Reply(channel.OutboundMessage{ //nolint:errcheck
+	case errors.Is(err, agent.ErrAgentOutputLimitExceeded):
+		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
 			Text: "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` (or `ACP_STDIO_LIMIT`).",
 		})
-	case errors.Is(err, acp.ErrNoActiveSession):
-		resp.Reply(channel.OutboundMessage{ //nolint:errcheck
+	case errors.Is(err, agent.ErrNoActiveSession):
+		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
 			Text: "No active session. Send a message again or use /new [workspace].",
 		})
 	default:
 		slog.Error("prompt failed", "chat_id", chatID, "error", err)
-		resp.Reply(channel.OutboundMessage{Text: "❌ Failed to process your request."}) //nolint:errcheck
+		resp.Reply(domain.OutboundMessage{Text: "❌ Failed to process your request."}) //nolint:errcheck
 	}
 }
 
-func (d *Dispatcher) sendReply(resp channel.Responder, reply *acp.AgentReply) {
-	resp.Reply(convertToOutbound(reply)) //nolint:errcheck
+func (d *Dispatcher) sendReply(resp domain.Responder, reply *domain.AgentReply) {
+	resp.Reply(domain.OutboundMessage{ //nolint:errcheck
+		Text:   reply.Text,
+		Images: reply.Images,
+		Files:  reply.Files,
+	})
 }
 
-func convertToPromptInput(msg channel.InboundMessage) acp.PromptInput {
-	input := acp.PromptInput{Text: msg.Text}
+// convertToPromptInput converts a channel InboundMessage to a domain PromptInput.
+func convertToPromptInput(msg domain.InboundMessage) domain.PromptInput {
+	input := domain.PromptInput{Text: msg.Text}
 	for _, att := range msg.Attachments {
 		switch att.MediaType {
 		case "image":
-			input.Images = append(input.Images, acp.ImageData{
+			input.Images = append(input.Images, domain.ImageData{
 				MIMEType: "image/jpeg",
 				Data:     att.Data,
 				Name:     att.FileName,
 			})
 		default:
-			fd := acp.FileData{
+			fd := domain.FileData{
 				MIMEType: att.MediaType,
 				Data:     att.Data,
 				Name:     att.FileName,
@@ -303,29 +315,9 @@ func convertToPromptInput(msg channel.InboundMessage) acp.PromptInput {
 	return input
 }
 
-func convertToOutbound(reply *acp.AgentReply) channel.OutboundMessage {
-	out := channel.OutboundMessage{Text: reply.Text}
-	for _, img := range reply.Images {
-		out.Images = append(out.Images, channel.ImageData{
-			MIMEType: img.MIMEType,
-			Data:     img.Data,
-			Name:     img.Name,
-		})
-	}
-	for _, f := range reply.Files {
-		out.Files = append(out.Files, channel.FileData{
-			MIMEType:    f.MIMEType,
-			Data:        f.Data,
-			Name:        f.Name,
-			TextContent: f.TextContent,
-		})
-	}
-	return out
-}
-
 func (d *Dispatcher) setupCallbacks() {
-	d.agentSvc.SetPermissionHandler(func(chatID int64, req acp.PermissionRequest) <-chan acp.PermissionResponse {
-		ch := make(chan acp.PermissionResponse, 1)
+	d.agentSvc.SetPermissionHandler(func(chatID int64, req domain.PermissionRequest) <-chan domain.PermissionResponse {
+		ch := make(chan domain.PermissionResponse, 1)
 		pp := &pendingPermission{ch: ch, chatID: chatID}
 		d.pendingPerms.Store(req.ID, pp)
 
@@ -336,8 +328,8 @@ func (d *Dispatcher) setupCallbacks() {
 		go d.expirePermissionRequest(req.ID, ch)
 
 		if v, ok := d.activeResponders.Load(chatID); ok {
-			resp := v.(channel.Responder)
-			resp.ShowPermissionUI(channel.PermissionRequest{ //nolint:errcheck
+			resp := v.(domain.Responder)
+			resp.ShowPermissionUI(domain.ChannelPermissionRequest{ //nolint:errcheck
 				ID:               req.ID,
 				Tool:             req.Tool,
 				Description:      req.Description,
@@ -347,26 +339,21 @@ func (d *Dispatcher) setupCallbacks() {
 		return ch
 	})
 
-	d.agentSvc.SetActivityHandler(func(chatID int64, block acp.ActivityBlock) {
+	d.agentSvc.SetActivityHandler(func(chatID int64, block domain.ActivityBlock) {
 		if v, ok := d.activeResponders.Load(chatID); ok {
-			resp := v.(channel.Responder)
+			resp := v.(domain.Responder)
 			workspace := ""
 			if info := d.agentSvc.ActiveSession(chatID); info != nil {
 				workspace = info.Workspace
 			}
-			resp.SendActivity(channel.ActivityBlock{ //nolint:errcheck
-				Kind:      string(block.Kind),
-				Label:     block.Label,
-				Detail:    block.Detail,
-				Text:      block.Text,
-				Status:    block.Status,
-				Workspace: workspace,
-			})
+			b := block
+			b.Workspace = workspace
+			resp.SendActivity(b) //nolint:errcheck
 		}
 	})
 }
 
-func (d *Dispatcher) expirePermissionRequest(reqID string, ch chan acp.PermissionResponse) {
+func (d *Dispatcher) expirePermissionRequest(reqID string, ch chan domain.PermissionResponse) {
 	timer := time.NewTimer(permissionRequestTTL)
 	defer timer.Stop()
 
@@ -380,7 +367,7 @@ func (d *Dispatcher) expirePermissionRequest(reqID string, ch chan acp.Permissio
 		pp := v.(*pendingPermission)
 		if pp.ch == ch {
 			select {
-			case ch <- acp.PermissionResponse{Decision: acp.PermissionDeny}:
+			case ch <- domain.PermissionResponse{Decision: domain.PermissionDeny}:
 			default:
 			}
 		}
@@ -390,15 +377,15 @@ func (d *Dispatcher) expirePermissionRequest(reqID string, ch chan acp.Permissio
 	d.permActionsMu.Unlock()
 }
 
-func permDecisionsToStrings(decisions []acp.PermissionDecision) []string {
+func permDecisionsToStrings(decisions []domain.PermissionDecision) []string {
 	out := make([]string, len(decisions))
 	for i, dec := range decisions {
 		switch dec {
-		case acp.PermissionAlways:
+		case domain.PermissionAlways:
 			out[i] = "always_allow"
-		case acp.PermissionThisTime:
+		case domain.PermissionThisTime:
 			out[i] = "allow_once"
-		case acp.PermissionDeny:
+		case domain.PermissionDeny:
 			out[i] = "deny"
 		default:
 			out[i] = string(dec)
@@ -408,15 +395,15 @@ func permDecisionsToStrings(decisions []acp.PermissionDecision) []string {
 }
 
 // RespondPermission resolves a pending permission request.
-func (d *Dispatcher) RespondPermission(reqID string, decision acp.PermissionDecision) {
+func (d *Dispatcher) RespondPermission(reqID string, decision domain.PermissionDecision) {
 	if v, ok := d.pendingPerms.LoadAndDelete(reqID); ok {
 		pp := v.(*pendingPermission)
 		select {
-		case pp.ch <- acp.PermissionResponse{Decision: decision}:
+		case pp.ch <- domain.PermissionResponse{Decision: decision}:
 		default:
 		}
-		if decision == acp.PermissionAlways && d.agentSvc != nil {
-			d.agentSvc.SetSessionPermissionMode(pp.chatID, acp.PermissionModeApprove)
+		if decision == domain.PermissionAlways && d.agentSvc != nil {
+			d.agentSvc.SetSessionPermissionMode(pp.chatID, domain.PermissionModeApprove)
 		}
 	}
 	d.permActionsMu.Lock()
@@ -425,7 +412,7 @@ func (d *Dispatcher) RespondPermission(reqID string, decision acp.PermissionDeci
 }
 
 // PermissionActions returns available actions for a pending permission request.
-func (d *Dispatcher) PermissionActions(reqID string) []acp.PermissionDecision {
+func (d *Dispatcher) PermissionActions(reqID string) []domain.PermissionDecision {
 	d.permActionsMu.Lock()
 	defer d.permActionsMu.Unlock()
 	return d.permActions[reqID]
@@ -450,7 +437,7 @@ func (d *Dispatcher) HandleBusySendNow(chatID int64, token string) (ok bool, err
 }
 
 // ResolveResumeChoice resolves a pending resume keyboard selection.
-func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID int64, index int) (*acp.SessionInfo, error) {
+func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID int64, index int) (*domain.SessionInfo, error) {
 	d.resumeChoicesMu.Lock()
 	candidates := d.pendingResumeChoices[chatID]
 	delete(d.pendingResumeChoices, chatID)

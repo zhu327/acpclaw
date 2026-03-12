@@ -1,6 +1,10 @@
 package dispatcher
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/zhu327/acpclaw/internal/domain"
+)
 
 // AllowlistConfig holds user ID and username allowlists for access control.
 type AllowlistConfig struct {
@@ -8,22 +12,19 @@ type AllowlistConfig struct {
 	AllowedUsernames []string
 }
 
-// AllowlistChecker 检查用户是否在允许列表中
-type AllowlistChecker interface {
-	IsAllowed(userID int64, username string) bool
-}
-
-// DefaultAllowlistChecker 基于配置的允许列表检查器
+// DefaultAllowlistChecker checks access using configured allowlists.
 type DefaultAllowlistChecker struct {
 	cfg AllowlistConfig
 }
 
-// NewAllowlistChecker 创建允许列表检查器
+var _ domain.AllowlistChecker = (*DefaultAllowlistChecker)(nil)
+
+// NewAllowlistChecker creates an allowlist checker.
 func NewAllowlistChecker(cfg AllowlistConfig) *DefaultAllowlistChecker {
 	return &DefaultAllowlistChecker{cfg: cfg}
 }
 
-// IsAllowed 检查用户是否在允许列表中，如果两个列表都为空则允许所有用户
+// IsAllowed returns true when the user is in the allowlist, or when both lists are empty.
 func (c *DefaultAllowlistChecker) IsAllowed(userID int64, username string) bool {
 	if len(c.cfg.AllowedUserIDs) == 0 && len(c.cfg.AllowedUsernames) == 0 {
 		return true
@@ -43,7 +44,7 @@ func (c *DefaultAllowlistChecker) IsAllowed(userID int64, username string) bool 
 }
 
 // IsAllowed returns true if the user is in the allowlist, or if both lists are empty (allow all).
-// Deprecated: 使用 AllowlistChecker 接口代替
+// Deprecated: use the AllowlistChecker interface instead.
 func IsAllowed(cfg AllowlistConfig, userID int64, username string) bool {
 	checker := NewAllowlistChecker(cfg)
 	return checker.IsAllowed(userID, username)

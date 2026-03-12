@@ -1,4 +1,4 @@
-package acp
+package agent
 
 import (
 	"context"
@@ -18,6 +18,9 @@ import (
 	"unsafe"
 
 	acpsdk "github.com/coder/acp-go-sdk"
+	"github.com/zhu327/acpclaw/internal/acpclient"
+	"github.com/zhu327/acpclaw/internal/domain"
+	"github.com/zhu327/acpclaw/internal/session"
 )
 
 // ServiceConfig configures the ACP agent service.
@@ -26,14 +29,15 @@ type ServiceConfig struct {
 	Workspace      string        // default workspace
 	ConnectTimeout time.Duration // timeout for initialize + new_session
 	ListTimeout    time.Duration // timeout for session/list calls; defaults to 5s
-	PermissionMode PermissionMode
+	PermissionMode domain.PermissionMode
 	EventOutput    string // "stdout" or "off"
 	MCPServers     []acpsdk.McpServer
 	ChannelName    string // channel identifier (e.g., "telegram", "slack") for context tracking
 	// AgentEnv is the explicit set of env var names to pass to agent subprocesses.
 	// When nil, a safe default allowlist is used (PATH, HOME, LANG, etc.).
 	// Set to an empty slice to pass no env vars at all.
-	AgentEnv []string
+	AgentEnv     []string
+	SessionStore *session.Store
 }
 
 type liveSession struct {
@@ -42,11 +46,13 @@ type liveSession struct {
 	cmd                 *exec.Cmd
 	conn                *acpsdk.ClientSideConnection
 	rawConn             *acpsdk.Connection // for session/list calls not yet in SDK
-	client              *AcpClient
-	permMode            PermissionMode
+	client              *acpclient.AcpClient
+	permMode            domain.PermissionMode
 	supportsLoadSession bool
 	supportsSessionList bool
 }
+
+var _ domain.AgentService = (*AcpAgentService)(nil)
 
 // AcpAgentService manages ACP agent subprocesses per chat. Each chatID maintains a long-lived
 // ACP process; session operations run on the same connection.
@@ -55,12 +61,13 @@ type AcpAgentService struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	liveByChat     map[int64]*liveSession
-	sessionHistory map[int64][]SessionInfo // 本地 session 历史，agent 不支持 session/list 时作为 fallback
+	sessionHistory map[int64][]domain.SessionInfo // Local session history when agent lacks session/list.
 	mu             sync.RWMutex
 	promptLocks    sync.Map // map[int64]*sync.Mutex
 	sessionLocks   sync.Map // map[int64]*sync.Mutex
-	onActivity     func(int64, ActivityBlock)
-	onPermission   func(int64, PermissionRequest) <-chan PermissionResponse
+	onActivity     func(int64, domain.ActivityBlock)
+	onPermission   func(int64, domain.PermissionRequest) <-chan domain.PermissionResponse
+	sessionStore   *session.Store
 }
 
 // defaultAgentEnvAllowlist is the set of env var names passed to agent subprocesses
@@ -89,33 +96,34 @@ func NewAgentService(cfg ServiceConfig) *AcpAgentService {
 		ctx:            ctx,
 		cancel:         cancel,
 		liveByChat:     make(map[int64]*liveSession),
-		sessionHistory: make(map[int64][]SessionInfo),
+		sessionHistory: make(map[int64][]domain.SessionInfo),
+		sessionStore:   cfg.SessionStore,
 	}
 }
 
 // SetActivityHandler sets the callback for activity updates.
-func (s *AcpAgentService) SetActivityHandler(fn func(chatID int64, block ActivityBlock)) {
+func (s *AcpAgentService) SetActivityHandler(fn func(chatID int64, block domain.ActivityBlock)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onActivity = fn
 }
 
 // SetPermissionHandler sets the callback for permission requests.
-func (s *AcpAgentService) SetPermissionHandler(fn func(chatID int64, req PermissionRequest) <-chan PermissionResponse) {
+func (s *AcpAgentService) SetPermissionHandler(fn func(chatID int64, req domain.PermissionRequest) <-chan domain.PermissionResponse) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onPermission = fn
 }
 
 // ActiveSession returns the active session info for the chat, or nil.
-func (s *AcpAgentService) ActiveSession(chatID int64) *SessionInfo {
+func (s *AcpAgentService) ActiveSession(chatID int64) *domain.SessionInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	live := s.liveByChat[chatID]
 	if live == nil {
 		return nil
 	}
-	return &SessionInfo{SessionID: live.sessionID, Workspace: live.workspace}
+	return &domain.SessionInfo{SessionID: live.sessionID, Workspace: live.workspace}
 }
 
 // promptLockFor returns the per-chat mutex that serializes Prompt calls.
@@ -153,7 +161,7 @@ func stopLiveSession(live *liveSession) {
 		return
 	}
 	if live.client != nil {
-		live.client.terminals.ReleaseSession(live.sessionID)
+		live.client.ReleaseSessionTerminals(live.sessionID)
 	}
 	if live.cmd == nil || live.cmd.Process == nil {
 		return
@@ -232,7 +240,7 @@ type spawnResult struct {
 	cmd                 *exec.Cmd
 	conn                *acpsdk.ClientSideConnection
 	rawConn             *acpsdk.Connection // extracted via unsafe for session/list calls not yet in SDK
-	client              *AcpClient
+	client              *acpclient.AcpClient
 	initResp            *acpsdk.InitializeResponse
 	supportsSessionList bool   // determined from agentCapabilities.sessionCapabilities.list
 	workspace           string // prepared workspace path for Cwd
@@ -335,7 +343,7 @@ func (s *AcpAgentService) spawnAndInitialize(ctx context.Context, workspace stri
 		return nil, err
 	}
 
-	client := NewAcpClient(nil, nil)
+	client := acpclient.NewAcpClient(nil, nil)
 	conn := acpsdk.NewClientSideConnection(client, stdin, stdout)
 
 	initCtx, cancel := context.WithTimeout(ctx, s.cfg.ConnectTimeout)
@@ -386,8 +394,8 @@ type sessionListItem struct {
 	UpdatedAt *string `json:"updatedAt,omitempty"`
 }
 
-func sessionItemToSessionInfo(item sessionListItem) SessionInfo {
-	info := SessionInfo{SessionID: item.SessionID, Workspace: item.Cwd}
+func sessionItemToSessionInfo(item sessionListItem) domain.SessionInfo {
+	info := domain.SessionInfo{SessionID: item.SessionID, Workspace: item.Cwd}
 	if item.Title != nil {
 		info.Title = *item.Title
 	}
@@ -429,8 +437,8 @@ func callSessionList(
 
 const maxSessionHistory = 20
 
-func upsertCappedSessionHistory(history []SessionInfo, info SessionInfo) []SessionInfo {
-	filtered := make([]SessionInfo, 0, len(history)+1)
+func upsertCappedSessionHistory(history []domain.SessionInfo, info domain.SessionInfo) []domain.SessionInfo {
+	filtered := make([]domain.SessionInfo, 0, len(history)+1)
 	for _, h := range history {
 		if h.SessionID != info.SessionID {
 			filtered = append(filtered, h)
@@ -453,7 +461,7 @@ func (s *AcpAgentService) removeSessionFromHistory(chatID int64, sessionID strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	history := s.sessionHistory[chatID]
-	filtered := make([]SessionInfo, 0, len(history))
+	filtered := make([]domain.SessionInfo, 0, len(history))
 	for _, h := range history {
 		if h.SessionID != sessionID {
 			filtered = append(filtered, h)
@@ -486,7 +494,7 @@ func (s *AcpAgentService) createNewSession(
 	s.mu.Lock()
 	live.sessionID = string(newSess.SessionId)
 	live.workspace = targetWorkspace
-	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], SessionInfo{
+	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], domain.SessionInfo{
 		SessionID: live.sessionID,
 		Workspace: targetWorkspace,
 		UpdatedAt: time.Now(),
@@ -497,13 +505,16 @@ func (s *AcpAgentService) createNewSession(
 	return nil
 }
 
-// writeSessionContext 写入会话上下文供 MCP 工具读取，失败不影响主流程
+// writeSessionContext writes chat context for MCP tools; failures do not affect the main flow.
 func (s *AcpAgentService) writeSessionContext(chatID int64) {
+	if s.sessionStore == nil {
+		return
+	}
 	channel := s.cfg.ChannelName
 	if channel == "" {
 		channel = "telegram" // backward compatibility default
 	}
-	if err := WriteChatContext(channel, strconv.FormatInt(chatID, 10)); err != nil {
+	if err := s.sessionStore.Write(channel, strconv.FormatInt(chatID, 10)); err != nil {
 		slog.Warn("failed to write session context", "chatID", chatID, "channel", channel, "error", err)
 	}
 }
@@ -625,7 +636,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID int64, session
 	s.mu.Lock()
 	live.sessionID = sessionID
 	live.workspace = targetWorkspace
-	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], SessionInfo{
+	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], domain.SessionInfo{
 		SessionID: sessionID,
 		Workspace: targetWorkspace,
 		UpdatedAt: time.Now(),
@@ -637,7 +648,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID int64, session
 }
 
 // ListSessions returns sessions from the agent or local history fallback.
-func (s *AcpAgentService) ListSessions(ctx context.Context, chatID int64) ([]SessionInfo, error) {
+func (s *AcpAgentService) ListSessions(ctx context.Context, chatID int64) ([]domain.SessionInfo, error) {
 	s.mu.RLock()
 	live := s.liveByChat[chatID]
 	s.mu.RUnlock()
@@ -651,7 +662,7 @@ func (s *AcpAgentService) ListSessions(ctx context.Context, chatID int64) ([]Ses
 		if err != nil {
 			return nil, err
 		}
-		result := make([]SessionInfo, 0, len(items))
+		result := make([]domain.SessionInfo, 0, len(items))
 		for _, item := range items {
 			result = append(result, sessionItemToSessionInfo(item))
 		}
@@ -664,7 +675,7 @@ func (s *AcpAgentService) ListSessions(ctx context.Context, chatID int64) ([]Ses
 	if len(history) == 0 {
 		return nil, nil
 	}
-	result := make([]SessionInfo, len(history))
+	result := make([]domain.SessionInfo, len(history))
 	copy(result, history)
 	return result, nil
 }
@@ -726,7 +737,7 @@ type fileURIResult struct {
 	passThrough bool // true when the file should be forwarded as-is (non-local URI)
 }
 
-func extractFileURI(f FileData) string {
+func extractFileURI(f domain.FileData) string {
 	if strings.HasPrefix(f.Name, "file://") {
 		return f.Name
 	}
@@ -740,7 +751,7 @@ func fileURIWarning(format string, args ...any) fileURIResult {
 	return fileURIResult{warning: "Attachment warning: " + fmt.Sprintf(format, args...) + "\n"}
 }
 
-func resolveFileURI(f FileData, workspaceAbs string) fileURIResult {
+func resolveFileURI(f domain.FileData, workspaceAbs string) fileURIResult {
 	fileURI := extractFileURI(f)
 	if fileURI == "" {
 		return fileURIResult{}
@@ -782,19 +793,22 @@ func resolveFileURI(f FileData, workspaceAbs string) fileURIResult {
 }
 
 // ResolveFileURIResources resolves file:// URIs in reply files to actual content.
-func (s *AcpAgentService) ResolveFileURIResources(reply *AgentReply, workspace string) *AgentReply {
+func (s *AcpAgentService) ResolveFileURIResources(reply *domain.AgentReply, workspace string) *domain.AgentReply {
 	if reply == nil {
 		return nil
 	}
-	out := &AgentReply{
+	out := &domain.AgentReply{
 		Text:       reply.Text,
-		Images:     append([]ImageData(nil), reply.Images...),
+		Images:     append([]domain.ImageData(nil), reply.Images...),
 		Files:      nil,
-		Activities: append([]ActivityBlock(nil), reply.Activities...),
+		Activities: append([]domain.ActivityBlock(nil), reply.Activities...),
 	}
 	workspaceAbs, err := filepath.Abs(workspace)
 	if err != nil {
 		workspaceAbs = filepath.Clean(workspace)
+	}
+	if evaluatedAbs, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
+		workspaceAbs = evaluatedAbs
 	}
 	for _, f := range reply.Files {
 		r := resolveFileURI(f, workspaceAbs)
@@ -806,16 +820,16 @@ func (s *AcpAgentService) ResolveFileURIResources(reply *AgentReply, workspace s
 		case r.data == nil:
 			out.Files = append(out.Files, f)
 		case strings.HasPrefix(f.MIMEType, "image/"):
-			out.Images = append(out.Images, ImageData{MIMEType: f.MIMEType, Data: r.data, Name: r.name})
+			out.Images = append(out.Images, domain.ImageData{MIMEType: f.MIMEType, Data: r.data, Name: r.name})
 		default:
-			out.Files = append(out.Files, FileData{MIMEType: f.MIMEType, Data: r.data, Name: r.name})
+			out.Files = append(out.Files, domain.FileData{MIMEType: f.MIMEType, Data: r.data, Name: r.name})
 		}
 	}
 	return out
 }
 
 // Prompt sends a prompt to the agent and returns the reply.
-func (s *AcpAgentService) Prompt(ctx context.Context, chatID int64, input PromptInput) (*AgentReply, error) {
+func (s *AcpAgentService) Prompt(ctx context.Context, chatID int64, input domain.PromptInput) (*domain.AgentReply, error) {
 	lock := s.promptLockFor(chatID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -855,18 +869,18 @@ func (s *AcpAgentService) Prompt(ctx context.Context, chatID int64, input Prompt
 	return reply, nil
 }
 
-// setupPromptCallbacks 配置 Prompt 执行时的 activity 和 permission 回调
+// setupPromptCallbacks wires activity and permission callbacks for prompt execution.
 func (s *AcpAgentService) setupPromptCallbacks(
 	live *liveSession,
 	chatID int64,
-	onActivity func(int64, ActivityBlock),
-	onPermission func(int64, PermissionRequest) <-chan PermissionResponse,
+	onActivity func(int64, domain.ActivityBlock),
+	onPermission func(int64, domain.PermissionRequest) <-chan domain.PermissionResponse,
 ) {
 	logEvents := shouldLogEventOutput(s.cfg.EventOutput)
 	permMode := live.permMode
 
 	live.client.SetCallbacks(
-		func(b ActivityBlock) {
+		func(b domain.ActivityBlock) {
 			if logEvents {
 				slog.Info("ACP activity event",
 					"chat_id", chatID, "session_id", live.sessionID,
@@ -879,7 +893,7 @@ func (s *AcpAgentService) setupPromptCallbacks(
 				onActivity(chatID, b)
 			}
 		},
-		func(req PermissionRequest) <-chan PermissionResponse {
+		func(req domain.PermissionRequest) <-chan domain.PermissionResponse {
 			if logEvents {
 				slog.Info("ACP permission event",
 					"chat_id", chatID, "session_id", live.sessionID,
@@ -892,24 +906,24 @@ func (s *AcpAgentService) setupPromptCallbacks(
 }
 
 func (s *AcpAgentService) permissionResponseChan(
-	permMode PermissionMode,
+	permMode domain.PermissionMode,
 	chatID int64,
-	req PermissionRequest,
-	onPermission func(int64, PermissionRequest) <-chan PermissionResponse,
-) <-chan PermissionResponse {
-	ch := make(chan PermissionResponse, 1)
+	req domain.PermissionRequest,
+	onPermission func(int64, domain.PermissionRequest) <-chan domain.PermissionResponse,
+) <-chan domain.PermissionResponse {
+	ch := make(chan domain.PermissionResponse, 1)
 	switch permMode {
-	case PermissionModeApprove:
-		ch <- PermissionResponse{Decision: PermissionAlways}
+	case domain.PermissionModeApprove:
+		ch <- domain.PermissionResponse{Decision: domain.PermissionAlways}
 		return ch
-	case PermissionModeDeny:
-		ch <- PermissionResponse{Decision: PermissionDeny}
+	case domain.PermissionModeDeny:
+		ch <- domain.PermissionResponse{Decision: domain.PermissionDeny}
 		return ch
 	}
 	if onPermission != nil {
 		return onPermission(chatID, req)
 	}
-	ch <- PermissionResponse{Decision: PermissionDeny}
+	ch <- domain.PermissionResponse{Decision: domain.PermissionDeny}
 	return ch
 }
 
@@ -949,7 +963,7 @@ func (s *AcpAgentService) Shutdown() {
 }
 
 // SetSessionPermissionMode updates the permission mode for the chat's live session.
-func (s *AcpAgentService) SetSessionPermissionMode(chatID int64, mode PermissionMode) {
+func (s *AcpAgentService) SetSessionPermissionMode(chatID int64, mode domain.PermissionMode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if live := s.liveByChat[chatID]; live != nil {
@@ -970,8 +984,8 @@ func (w *slogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// BuildContentBlocks converts PromptInput to SDK ContentBlock slice.
-func BuildContentBlocks(input PromptInput) []acpsdk.ContentBlock {
+// BuildContentBlocks converts domain.PromptInput to SDK ContentBlock slice.
+func BuildContentBlocks(input domain.PromptInput) []acpsdk.ContentBlock {
 	var blocks []acpsdk.ContentBlock
 	if input.Text != "" {
 		blocks = append(blocks, acpsdk.TextBlock(input.Text))

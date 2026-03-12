@@ -1,4 +1,4 @@
-package acp
+package acpclient
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 var _ acpsdk.Client = (*AcpClient)(nil)
@@ -88,47 +89,47 @@ func ActivityLabel(kind, toolName string) string {
 	}
 }
 
-// InferActivityKind infers ActivityKind from a tool name.
-func InferActivityKind(toolName string) ActivityKind {
+// InferActivityKind infers domain.ActivityKind from a tool name.
+func InferActivityKind(toolName string) domain.ActivityKind {
 	tl := strings.ToLower(toolName)
 	switch {
 	case tl == "think":
-		return ActivityThink
+		return domain.ActivityThink
 	case strings.Contains(tl, "read") || strings.Contains(tl, "view"):
-		return ActivityRead
+		return domain.ActivityRead
 	case strings.Contains(tl, "edit") || strings.Contains(tl, "replace") || strings.Contains(tl, "str_replace"):
-		return ActivityEdit
+		return domain.ActivityEdit
 	case strings.Contains(tl, "write") || strings.Contains(tl, "create"):
-		return ActivityWrite
+		return domain.ActivityWrite
 	case strings.Contains(tl, "search") || strings.Contains(tl, "find") || strings.Contains(tl, "grep"):
-		return ActivitySearch
+		return domain.ActivitySearch
 	default:
-		return ActivityExecute
+		return domain.ActivityExecute
 	}
 }
 
-// AcpClient implements acp.Client and captures agent output for forwarding to Telegram.
+// AcpClient implements acpsdk.Client and captures agent output for forwarding to channels.
 type AcpClient struct {
 	mu                 sync.Mutex
 	textBuf            strings.Builder
-	images             []ImageData
-	files              []FileData
-	activities         []ActivityBlock
-	activeBlock        *ActivityBlock
+	images             []domain.ImageData
+	files              []domain.FileData
+	activities         []domain.ActivityBlock
+	activeBlock        *domain.ActivityBlock
 	activeBlockChunks  []string
 	activeToolCallID   acpsdk.ToolCallId
 	pendingNonToolText []string
 
-	onActivity   func(ActivityBlock)
-	onPermission func(PermissionRequest) <-chan PermissionResponse
+	onActivity   func(domain.ActivityBlock)
+	onPermission func(domain.PermissionRequest) <-chan domain.PermissionResponse
 
 	terminals *TerminalManager
 }
 
 // NewAcpClient creates a new AcpClient with the given callbacks.
 func NewAcpClient(
-	onActivity func(ActivityBlock),
-	onPermission func(PermissionRequest) <-chan PermissionResponse,
+	onActivity func(domain.ActivityBlock),
+	onPermission func(domain.PermissionRequest) <-chan domain.PermissionResponse,
 ) *AcpClient {
 	return &AcpClient{
 		onActivity:   onActivity,
@@ -137,10 +138,18 @@ func NewAcpClient(
 	}
 }
 
+// ReleaseSessionTerminals cleans up terminal subprocesses for a session.
+func (c *AcpClient) ReleaseSessionTerminals(sessionID string) {
+	if c.terminals == nil {
+		return
+	}
+	c.terminals.ReleaseSession(sessionID)
+}
+
 // SetCallbacks atomically replaces both activity and permission callbacks.
 func (c *AcpClient) SetCallbacks(
-	onActivity func(ActivityBlock),
-	onPermission func(PermissionRequest) <-chan PermissionResponse,
+	onActivity func(domain.ActivityBlock),
+	onPermission func(domain.PermissionRequest) <-chan domain.PermissionResponse,
 ) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -163,14 +172,14 @@ func (c *AcpClient) StartCapture() {
 }
 
 // FinishCapture returns the buffered reply.
-func (c *AcpClient) FinishCapture() *AgentReply {
+func (c *AcpClient) FinishCapture() *domain.AgentReply {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.appendPendingNonToolTextToReply()
 	if c.activeBlock != nil {
 		c.closeAndCollectActiveBlock("in_progress", true)
 	}
-	return &AgentReply{
+	return &domain.AgentReply{
 		Text:       c.textBuf.String(),
 		Images:     c.images,
 		Files:      c.files,
@@ -189,12 +198,12 @@ func (c *AcpClient) appendPendingNonToolTextToReply() {
 	}
 }
 
-// SessionUpdate implements acp.Client.
+// SessionUpdate implements acpsdk.Client.
 func (c *AcpClient) SessionUpdate(ctx context.Context, params acpsdk.SessionNotification) error {
 	c.mu.Lock()
 	u := params.Update
 
-	var pendingActivities []*ActivityBlock
+	var pendingActivities []*domain.ActivityBlock
 	switch {
 	case u.AgentMessageChunk != nil:
 		c.appendContent(u.AgentMessageChunk.Content, false)
@@ -227,7 +236,7 @@ func (c *AcpClient) appendContent(block acpsdk.ContentBlock, fromTool bool) {
 			slog.Warn("failed to decode image base64 data", "error", err)
 			return
 		}
-		c.images = append(c.images, ImageData{
+		c.images = append(c.images, domain.ImageData{
 			MIMEType: block.Image.MimeType,
 			Data:     data,
 			Name:     "",
@@ -248,7 +257,7 @@ func (c *AcpClient) appendResource(res acpsdk.EmbeddedResourceResource) {
 	switch {
 	case res.TextResourceContents != nil:
 		t := res.TextResourceContents
-		c.files = append(c.files, FileData{
+		c.files = append(c.files, domain.FileData{
 			MIMEType: ptrStr(t.MimeType, "text/plain"),
 			Data:     []byte(t.Text),
 			Name:     t.Uri,
@@ -260,7 +269,7 @@ func (c *AcpClient) appendResource(res acpsdk.EmbeddedResourceResource) {
 			slog.Warn("failed to decode blob base64 data", "uri", b.Uri, "error", err)
 			return
 		}
-		c.files = append(c.files, FileData{
+		c.files = append(c.files, domain.FileData{
 			MIMEType: ptrStr(b.MimeType, "application/octet-stream"),
 			Data:     data,
 			Name:     b.Uri,
@@ -279,7 +288,7 @@ func (c *AcpClient) appendText(text string, fromTool bool) {
 	c.pendingNonToolText = appendTextChunk(c.pendingNonToolText, text)
 }
 
-func (c *AcpClient) flushPendingNonToolText() *ActivityBlock {
+func (c *AcpClient) flushPendingNonToolText() *domain.ActivityBlock {
 	if len(c.pendingNonToolText) == 0 {
 		return nil
 	}
@@ -288,8 +297,8 @@ func (c *AcpClient) flushPendingNonToolText() *ActivityBlock {
 	if text == "" {
 		return nil
 	}
-	block := ActivityBlock{
-		Kind:   ActivityThink,
+	block := domain.ActivityBlock{
+		Kind:   domain.ActivityThink,
 		Label:  "💡 Thinking",
 		Status: "completed",
 		Text:   text,
@@ -298,11 +307,11 @@ func (c *AcpClient) flushPendingNonToolText() *ActivityBlock {
 	return &block
 }
 
-func shouldEmitClosedActivity(block *ActivityBlock) bool {
+func shouldEmitClosedActivity(block *domain.ActivityBlock) bool {
 	if block == nil {
 		return false
 	}
-	if block.Kind == ActivityThink {
+	if block.Kind == domain.ActivityThink {
 		return true
 	}
 	if strings.TrimSpace(block.Text) != "" {
@@ -311,14 +320,14 @@ func shouldEmitClosedActivity(block *ActivityBlock) bool {
 	return block.Status == "failed"
 }
 
-func (c *AcpClient) closeAndCollectActiveBlock(status string, isPromptEnd bool) *ActivityBlock {
+func (c *AcpClient) closeAndCollectActiveBlock(status string, isPromptEnd bool) *domain.ActivityBlock {
 	if c.activeBlock == nil {
 		return nil
 	}
 	c.activeBlock.EndAt = time.Now()
 	c.activeBlock.Status = status
 	blockText := strings.TrimSpace(strings.Join(c.activeBlockChunks, ""))
-	if isPromptEnd && c.activeBlock.Kind != ActivityThink && blockText != "" {
+	if isPromptEnd && c.activeBlock.Kind != domain.ActivityThink && blockText != "" {
 		c.textBuf.WriteString(blockText)
 		blockText = ""
 	}
@@ -331,8 +340,8 @@ func (c *AcpClient) closeAndCollectActiveBlock(status string, isPromptEnd bool) 
 	return &closed
 }
 
-func (c *AcpClient) openToolBlock(tc *acpsdk.SessionUpdateToolCall) []*ActivityBlock {
-	var emitted []*ActivityBlock
+func (c *AcpClient) openToolBlock(tc *acpsdk.SessionUpdateToolCall) []*domain.ActivityBlock {
+	var emitted []*domain.ActivityBlock
 	if think := c.flushPendingNonToolText(); think != nil {
 		emitted = append(emitted, think)
 	}
@@ -344,7 +353,7 @@ func (c *AcpClient) openToolBlock(tc *acpsdk.SessionUpdateToolCall) []*ActivityB
 	}
 	kind := toolKindToActivityKind(tc.Kind, tc.Title)
 	label := ActivityLabel(string(kind), tc.Title)
-	block := ActivityBlock{
+	block := domain.ActivityBlock{
 		Kind:    kind,
 		Label:   label,
 		Detail:  tc.Title,
@@ -365,8 +374,8 @@ func isToolCallTerminal(status *acpsdk.ToolCallStatus) bool {
 	return s == acpsdk.ToolCallStatusCompleted || s == acpsdk.ToolCallStatusFailed
 }
 
-func (c *AcpClient) updateToolBlock(tu *acpsdk.SessionToolCallUpdate) []*ActivityBlock {
-	var emitted []*ActivityBlock
+func (c *AcpClient) updateToolBlock(tu *acpsdk.SessionToolCallUpdate) []*domain.ActivityBlock {
+	var emitted []*domain.ActivityBlock
 	for _, cont := range tu.Content {
 		if cont.Content != nil {
 			c.appendContent(cont.Content.Content, true)
@@ -385,26 +394,26 @@ func (c *AcpClient) updateToolBlock(tu *acpsdk.SessionToolCallUpdate) []*Activit
 	return emitted
 }
 
-func toolKindToActivityKind(k acpsdk.ToolKind, title string) ActivityKind {
+func toolKindToActivityKind(k acpsdk.ToolKind, title string) domain.ActivityKind {
 	switch k {
 	case acpsdk.ToolKindThink:
-		return ActivityThink
+		return domain.ActivityThink
 	case acpsdk.ToolKindRead:
-		return ActivityRead
+		return domain.ActivityRead
 	case acpsdk.ToolKindEdit:
-		return ActivityEdit
+		return domain.ActivityEdit
 	case acpsdk.ToolKindSearch:
-		return ActivitySearch
+		return domain.ActivitySearch
 	case acpsdk.ToolKindExecute:
-		return ActivityExecute
+		return domain.ActivityExecute
 	case acpsdk.ToolKindOther, "":
 		return InferActivityKind(title)
 	default:
-		return ActivityExecute
+		return domain.ActivityExecute
 	}
 }
 
-func availableActionsFromOptions(options []acpsdk.PermissionOption) []PermissionDecision {
+func availableActionsFromOptions(options []acpsdk.PermissionOption) []domain.PermissionDecision {
 	hasAlways := false
 	hasOnce := false
 	for _, opt := range options {
@@ -415,18 +424,18 @@ func availableActionsFromOptions(options []acpsdk.PermissionOption) []Permission
 			hasOnce = true
 		}
 	}
-	var actions []PermissionDecision
+	var actions []domain.PermissionDecision
 	if hasAlways {
-		actions = append(actions, PermissionAlways)
+		actions = append(actions, domain.PermissionAlways)
 	}
 	if hasOnce {
-		actions = append(actions, PermissionThisTime)
+		actions = append(actions, domain.PermissionThisTime)
 	}
-	actions = append(actions, PermissionDeny)
+	actions = append(actions, domain.PermissionDeny)
 	return actions
 }
 
-// RequestPermission implements acp.Client.
+// RequestPermission implements acpsdk.Client.
 func (c *AcpClient) RequestPermission(
 	ctx context.Context,
 	req acpsdk.RequestPermissionRequest,
@@ -436,7 +445,7 @@ func (c *AcpClient) RequestPermission(
 	if m, ok := req.ToolCall.RawInput.(map[string]any); ok {
 		input = m
 	}
-	ourReq := PermissionRequest{
+	ourReq := domain.PermissionRequest{
 		ID:               string(req.ToolCall.ToolCallId),
 		Tool:             tool,
 		Description:      tool,
@@ -449,11 +458,11 @@ func (c *AcpClient) RequestPermission(
 	c.mu.Unlock()
 
 	if handler == nil {
-		return permissionResponseToSDK(PermissionResponse{Decision: PermissionDeny}, req.Options), nil
+		return permissionResponseToSDK(domain.PermissionResponse{Decision: domain.PermissionDeny}, req.Options), nil
 	}
 	ch := handler(ourReq)
 	if ch == nil {
-		return permissionResponseToSDK(PermissionResponse{Decision: PermissionDeny}, req.Options), nil
+		return permissionResponseToSDK(domain.PermissionResponse{Decision: domain.PermissionDeny}, req.Options), nil
 	}
 	select {
 	case resp := <-ch:
@@ -521,18 +530,18 @@ func allowResponse(options []acpsdk.PermissionOption, preferAlways bool) acpsdk.
 }
 
 func permissionResponseToSDK(
-	resp PermissionResponse,
+	resp domain.PermissionResponse,
 	options []acpsdk.PermissionOption,
 ) acpsdk.RequestPermissionResponse {
 	switch resp.Decision {
-	case PermissionDeny:
+	case domain.PermissionDeny:
 		return denyResponse(options)
-	case PermissionThisTime:
+	case domain.PermissionThisTime:
 		if r := selectOption(options, acpsdk.PermissionOptionKindAllowOnce); r != nil {
 			return *r
 		}
 		return denyResponse(options)
-	case PermissionAlways:
+	case domain.PermissionAlways:
 		return allowResponse(options, true)
 	default:
 		return denyResponse(options)
@@ -542,12 +551,12 @@ func permissionResponseToSDK(
 // ErrNotSupported is returned by AcpClient methods that are not implemented.
 var ErrNotSupported = errors.New("not supported by this client")
 
-// ReadTextFile implements acp.Client.
+// ReadTextFile implements acpsdk.Client.
 func (c *AcpClient) ReadTextFile(_ context.Context, _ acpsdk.ReadTextFileRequest) (acpsdk.ReadTextFileResponse, error) {
 	return acpsdk.ReadTextFileResponse{}, ErrNotSupported
 }
 
-// WriteTextFile implements acp.Client.
+// WriteTextFile implements acpsdk.Client.
 func (c *AcpClient) WriteTextFile(
 	_ context.Context,
 	_ acpsdk.WriteTextFileRequest,
@@ -555,7 +564,7 @@ func (c *AcpClient) WriteTextFile(
 	return acpsdk.WriteTextFileResponse{}, ErrNotSupported
 }
 
-// CreateTerminal implements acp.Client.
+// CreateTerminal implements acpsdk.Client.
 func (c *AcpClient) CreateTerminal(
 	_ context.Context,
 	params acpsdk.CreateTerminalRequest,
@@ -563,7 +572,7 @@ func (c *AcpClient) CreateTerminal(
 	return c.terminals.Create(params)
 }
 
-// KillTerminalCommand implements acp.Client.
+// KillTerminalCommand implements acpsdk.Client.
 func (c *AcpClient) KillTerminalCommand(
 	_ context.Context,
 	params acpsdk.KillTerminalCommandRequest,
@@ -571,7 +580,7 @@ func (c *AcpClient) KillTerminalCommand(
 	return c.terminals.Kill(params)
 }
 
-// TerminalOutput implements acp.Client.
+// TerminalOutput implements acpsdk.Client.
 func (c *AcpClient) TerminalOutput(
 	_ context.Context,
 	params acpsdk.TerminalOutputRequest,
@@ -579,7 +588,7 @@ func (c *AcpClient) TerminalOutput(
 	return c.terminals.Output(params)
 }
 
-// ReleaseTerminal implements acp.Client.
+// ReleaseTerminal implements acpsdk.Client.
 func (c *AcpClient) ReleaseTerminal(
 	_ context.Context,
 	params acpsdk.ReleaseTerminalRequest,
@@ -587,7 +596,7 @@ func (c *AcpClient) ReleaseTerminal(
 	return c.terminals.Release(params)
 }
 
-// WaitForTerminalExit implements acp.Client.
+// WaitForTerminalExit implements acpsdk.Client.
 func (c *AcpClient) WaitForTerminalExit(
 	ctx context.Context,
 	params acpsdk.WaitForTerminalExitRequest,

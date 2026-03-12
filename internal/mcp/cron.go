@@ -16,8 +16,9 @@ import (
 
 var errNoSession = errors.New("no active session context found, please ensure a session is active")
 
-// sessionContextOrError 获取当前会话上下文，失败时返回错误结果供 handler 直接返回
-func sessionContextOrError(store *session.Store) (*session.Context, *mcp.CallToolResult) {
+// sessionContextOrError fetches the active session context; on failure it returns
+// an error result that the handler can return directly.
+func sessionContextOrError(store SessionContextStore) (*session.Context, *mcp.CallToolResult) {
 	ctx, err := store.Read()
 	if err != nil {
 		return nil, mcp.NewToolResultError(errNoSession.Error())
@@ -59,7 +60,7 @@ func cronCreateTool() mcp.Tool {
 	}
 }
 
-func cronCreateHandler(store *cron.Store, sessionStore *session.Store) server.ToolHandlerFunc {
+func cronCreateHandler(store CronStore, sessionStore SessionContextStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lastCtx, errRes := sessionContextOrError(sessionStore)
 		if errRes != nil {
@@ -118,7 +119,7 @@ func cronListTool() mcp.Tool {
 	}
 }
 
-func cronListHandler(store *cron.Store, sessionStore *session.Store) server.ToolHandlerFunc {
+func cronListHandler(store CronStore, sessionStore SessionContextStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lastCtx, errRes := sessionContextOrError(sessionStore)
 		if errRes != nil {
@@ -159,7 +160,7 @@ func cronDeleteTool() mcp.Tool {
 	}
 }
 
-func cronDeleteHandler(store *cron.Store, sessionStore *session.Store) server.ToolHandlerFunc {
+func cronDeleteHandler(store CronStore, sessionStore SessionContextStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := parseStringArg(request, "id")
 		if id == "" {

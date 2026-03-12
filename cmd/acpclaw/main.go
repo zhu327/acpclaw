@@ -19,14 +19,13 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/mymmrac/telego"
-	"github.com/zhu327/acpclaw/internal/acp"
-	"github.com/zhu327/acpclaw/internal/channel"
+	"github.com/zhu327/acpclaw/internal/agent"
 	"github.com/zhu327/acpclaw/internal/channel/telegram"
 	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/cron"
 	"github.com/zhu327/acpclaw/internal/dispatcher"
+	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/memory"
-	"github.com/zhu327/acpclaw/internal/util"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
 )
@@ -64,17 +63,17 @@ func run() error {
 	}
 	mcpChannelPath := filepath.Join(filepath.Dir(exe), "mcp-channel")
 
-	// 获取默认的 .acpclaw 目录路径
-	memoryDir := util.GetAcpclawMemoryDir()
-	historyDir := util.GetAcpclawHistoryDir()
-	cronDir := util.GetAcpclawCronDir()
+	// Resolve default .acpclaw directory paths.
+	memoryDir := config.GetAcpclawMemoryDir()
+	historyDir := config.GetAcpclawHistoryDir()
+	cronDir := config.GetAcpclawCronDir()
 
 	agentCmd := strings.Fields(cfg.Agent.Command)
-	svcCfg := acp.ServiceConfig{
+	svcCfg := agent.ServiceConfig{
 		AgentCommand:   agentCmd,
 		Workspace:      cfg.Agent.Workspace,
 		ConnectTimeout: time.Duration(cfg.Agent.ConnectTimeout) * time.Second,
-		PermissionMode: acp.PermissionMode(cfg.Permissions.Mode),
+		PermissionMode: domain.PermissionMode(cfg.Permissions.Mode),
 		EventOutput:    cfg.Permissions.EventOutput,
 		ChannelName:    "telegram", // TODO: make configurable when supporting multiple channels
 		MCPServers: []acpsdk.McpServer{
@@ -100,12 +99,12 @@ func run() error {
 			},
 		},
 	}
-	var agentSvc acp.AgentService
+	var agentSvc domain.AgentService
 	if *echoMode {
 		slog.Info("echo mode enabled: using EchoAgentService")
-		agentSvc = acp.NewEchoAgentService()
+		agentSvc = agent.NewEchoAgentService()
 	} else {
-		agentSvc = acp.NewAgentService(svcCfg)
+		agentSvc = agent.NewAgentService(svcCfg)
 	}
 
 	var botOpts []telego.BotOption
@@ -173,10 +172,10 @@ func run() error {
 		tgCfg,
 		telegram.CallbackHandlers{
 			OnPermission: func(reqID, decision string) {
-				decisionMap := map[string]acp.PermissionDecision{
-					"always": acp.PermissionAlways,
-					"once":   acp.PermissionThisTime,
-					"deny":   acp.PermissionDeny,
+				decisionMap := map[string]domain.PermissionDecision{
+					"always": domain.PermissionAlways,
+					"once":   domain.PermissionThisTime,
+					"deny":   domain.PermissionDeny,
 				}
 				if d, ok := decisionMap[decision]; ok {
 					disp.RespondPermission(reqID, d)
@@ -201,7 +200,7 @@ func run() error {
 				return
 			}
 
-			msg := channel.InboundMessage{
+			msg := domain.InboundMessage{
 				ChatID: job.ChatID,
 				Text:   job.Message,
 			}

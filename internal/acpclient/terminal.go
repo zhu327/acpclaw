@@ -1,4 +1,4 @@
-package acp
+package acpclient
 
 import (
 	"bytes"

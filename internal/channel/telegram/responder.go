@@ -10,7 +10,7 @@ import (
 
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
-	"github.com/zhu327/acpclaw/internal/channel"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 // permissionAction maps internal action IDs to display labels and callback data.
@@ -23,21 +23,21 @@ var permissionAction = map[string]struct {
 	"deny":         {"Deny", "deny"},
 }
 
-// TelegramResponder implements channel.Responder for Telegram.
+// TelegramResponder implements domain.Responder for Telegram.
 type TelegramResponder struct {
 	bot    *telego.Bot
 	chatID int64
 	msgID  int
 }
 
-var _ channel.Responder = (*TelegramResponder)(nil)
+var _ domain.Responder = (*TelegramResponder)(nil)
 
 // NewTelegramResponder creates a new TelegramResponder.
 func NewTelegramResponder(bot *telego.Bot, chatID int64, msgID int) *TelegramResponder {
 	return &TelegramResponder{bot: bot, chatID: chatID, msgID: msgID}
 }
 
-// BackgroundResponder implements channel.Responder for background tasks.
+// BackgroundResponder implements domain.Responder for background tasks.
 type BackgroundResponder struct {
 	bot    *telego.Bot
 	chatID int64
@@ -49,28 +49,32 @@ func NewBackgroundResponder(bot *telego.Bot, chatID int64) *BackgroundResponder 
 }
 
 // Reply sends an outbound message to the chat.
-func (r *BackgroundResponder) Reply(msg channel.OutboundMessage) error {
+func (r *BackgroundResponder) Reply(msg domain.OutboundMessage) error {
 	return sendOutbound(r.bot, r.chatID, msg)
 }
 
-func (r *BackgroundResponder) ShowPermissionUI(req channel.PermissionRequest) error { return nil }
-func (r *BackgroundResponder) ShowTypingIndicator() error                           { return nil }
-func (r *BackgroundResponder) SendActivity(block channel.ActivityBlock) error       { return nil }
+func (r *BackgroundResponder) ShowPermissionUI(req domain.ChannelPermissionRequest) error {
+	return nil
+}
+func (r *BackgroundResponder) ShowTypingIndicator() error { return nil }
+func (r *BackgroundResponder) SendActivity(block domain.ActivityBlock) error {
+	return nil
+}
 func (r *BackgroundResponder) ShowBusyNotification(token string, replyToMsgID int) (int, error) {
 	return 0, nil
 }
 func (r *BackgroundResponder) ClearBusyNotification(notifyMsgID int) error { return nil }
-func (r *BackgroundResponder) ShowResumeKeyboard(sessions []channel.SessionChoice) error {
+func (r *BackgroundResponder) ShowResumeKeyboard(sessions []domain.SessionChoice) error {
 	return nil
 }
 
 // Reply sends an outbound message to the chat.
-func (r *TelegramResponder) Reply(msg channel.OutboundMessage) error {
+func (r *TelegramResponder) Reply(msg domain.OutboundMessage) error {
 	return sendOutbound(r.bot, r.chatID, msg)
 }
 
 // ShowPermissionUI sends an inline keyboard for permission approval.
-func (r *TelegramResponder) ShowPermissionUI(req channel.PermissionRequest) error {
+func (r *TelegramResponder) ShowPermissionUI(req domain.ChannelPermissionRequest) error {
 	var row []telego.InlineKeyboardButton
 	for _, action := range req.AvailableActions {
 		pa, ok := permissionAction[action]
@@ -121,7 +125,7 @@ func (r *TelegramResponder) ShowTypingIndicator() error {
 }
 
 // SendActivity sends an agent activity block as a message.
-func (r *TelegramResponder) SendActivity(block channel.ActivityBlock) error {
+func (r *TelegramResponder) SendActivity(block domain.ActivityBlock) error {
 	text := formatActivityMessage(block)
 	chunks := RenderMarkdown(text)
 	for _, chunk := range chunks {
@@ -166,7 +170,7 @@ func (r *TelegramResponder) ClearBusyNotification(notifyMsgID int) error {
 const maxSessionLabelLen = 48
 
 // ShowResumeKeyboard sends an inline keyboard for session selection.
-func (r *TelegramResponder) ShowResumeKeyboard(sessions []channel.SessionChoice) error {
+func (r *TelegramResponder) ShowResumeKeyboard(sessions []domain.SessionChoice) error {
 	var rows [][]telego.InlineKeyboardButton
 	for _, s := range sessions {
 		label := truncate(fmt.Sprintf("%d. %s", s.Index+1, s.DisplayName), maxSessionLabelLen)
@@ -256,7 +260,7 @@ func formatActivityPath(raw, workspace string) string {
 	return raw
 }
 
-func formatActivityDetail(block channel.ActivityBlock) ([]string, string) {
+func formatActivityDetail(block domain.ActivityBlock) ([]string, string) {
 	detail := block.Detail
 	switch block.Kind {
 	case "execute":
@@ -276,7 +280,7 @@ func formatActivityDetail(block channel.ActivityBlock) ([]string, string) {
 	return nil, detail
 }
 
-func formatActivityMessage(block channel.ActivityBlock) string {
+func formatActivityMessage(block domain.ActivityBlock) string {
 	label := block.Label
 	if block.Kind == "search" {
 		if sl := searchSourceLabel(block.Detail, block.Text); sl != "" {
