@@ -3,9 +3,11 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/zhu327/acpclaw/internal/util"
 	"gopkg.in/yaml.v3"
 )
 
@@ -15,6 +17,15 @@ type Config struct {
 	Agent       AgentConfig       `yaml:"agent"`
 	Permissions PermissionsConfig `yaml:"permissions"`
 	Logging     LoggingConfig     `yaml:"logging"`
+	Memory      MemoryConfig      `yaml:"memory"`
+}
+
+// MemoryConfig holds memory system configuration.
+type MemoryConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Dir           string `yaml:"dir"`
+	HistoryDir    string `yaml:"history_dir"`
+	AutoSummarize bool   `yaml:"auto_summarize"`
 }
 
 // TelegramConfig holds Telegram bot configuration.
@@ -56,6 +67,9 @@ func Load(path string) (*Config, error) {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parsing config file: %w", err)
 		}
+		// Expand paths from YAML
+		cfg.Memory.Dir = util.ExpandPath(cfg.Memory.Dir)
+		cfg.Memory.HistoryDir = util.ExpandPath(cfg.Memory.HistoryDir)
 	}
 	if err := applyEnv(cfg); err != nil {
 		return nil, err
@@ -87,6 +101,7 @@ func (c *Config) Validate() error {
 }
 
 func defaults() *Config {
+	home, _ := os.UserHomeDir()
 	return &Config{
 		Agent: AgentConfig{
 			Workspace:      ".",
@@ -99,6 +114,12 @@ func defaults() *Config {
 		Logging: LoggingConfig{
 			Level:  "info",
 			Format: "text",
+		},
+		Memory: MemoryConfig{
+			Enabled:       false,
+			Dir:           filepath.Join(home, ".acpclaw", "memory"),
+			HistoryDir:    filepath.Join(home, ".acpclaw", "history"),
+			AutoSummarize: false,
 		},
 	}
 }
@@ -139,6 +160,15 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("ACP_LOG_FORMAT"); v != "" {
 		cfg.Logging.Format = v
+	}
+	if v := os.Getenv("ACPCLAW_MEMORY_ENABLED"); v != "" {
+		cfg.Memory.Enabled = v == "1" || strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("ACPCLAW_MEMORY_DIR"); v != "" {
+		cfg.Memory.Dir = util.ExpandPath(v)
+	}
+	if v := os.Getenv("ACPCLAW_HISTORY_DIR"); v != "" {
+		cfg.Memory.HistoryDir = util.ExpandPath(v)
 	}
 	return nil
 }

@@ -19,8 +19,10 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/mymmrac/telego"
 	"github.com/zhu327/acpclaw/internal/acp"
-	"github.com/zhu327/acpclaw/internal/bot"
+	"github.com/zhu327/acpclaw/internal/channel/telegram"
 	"github.com/zhu327/acpclaw/internal/config"
+	"github.com/zhu327/acpclaw/internal/dispatcher"
+	"github.com/zhu327/acpclaw/internal/memory"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
 )
@@ -68,10 +70,18 @@ func run() error {
 		MCPServers: []acpsdk.McpServer{
 			{
 				Stdio: &acpsdk.McpServerStdio{
-					Name:    "hello",
+					Name:    "acpclaw-memory",
 					Command: mcpChannelPath,
 					Args:    []string{},
-					Env:     []acpsdk.EnvVariable{},
+					Env: func() []acpsdk.EnvVariable {
+						if cfg.Memory.Enabled {
+							return []acpsdk.EnvVariable{
+								{Name: "ACPCLAW_MEMORY_DIR", Value: cfg.Memory.Dir},
+								{Name: "ACPCLAW_HISTORY_DIR", Value: cfg.Memory.HistoryDir},
+							}
+						}
+						return []acpsdk.EnvVariable{}
+					}(),
 				},
 			},
 		},
@@ -99,12 +109,30 @@ func run() error {
 		return fmt.Errorf("creating bot: %w", err)
 	}
 
-	botCfg := bot.Config{
+	dispCfg := dispatcher.Config{
+		DefaultWorkspace: cfg.Agent.Workspace,
 		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
 		AllowedUsernames: cfg.Telegram.AllowedUsernames,
-		DefaultWorkspace: cfg.Agent.Workspace,
+		AutoSummarize:    cfg.Memory.AutoSummarize,
 	}
-	bridge := bot.NewBridge(telegoBot, agentSvc, botCfg)
+	disp := dispatcher.New(dispCfg)
+	disp.SetAgentService(agentSvc)
+
+	if cfg.Memory.Enabled {
+		memorySvc, err := memory.NewService(cfg.Memory.Dir, cfg.Memory.HistoryDir)
+		if err != nil {
+			slog.Warn("memory service init failed", "error", err)
+		} else {
+			_ = memorySvc.Reindex()
+			disp.SetMemoryService(memorySvc)
+			defer func() {
+				if err := memorySvc.Close(); err != nil {
+					slog.Error("failed to close memory service", "error", err)
+				}
+			}()
+			slog.Info("memory service enabled", "dir", cfg.Memory.Dir)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -117,13 +145,34 @@ func run() error {
 		return fmt.Errorf("starting long polling: %w", err)
 	}
 
-	if err := bridge.RegisterHandlers(updates); err != nil {
-		return fmt.Errorf("registering handlers: %w", err)
+	tgCfg := telegram.ChannelConfig{
+		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
+		AllowedUsernames: cfg.Telegram.AllowedUsernames,
 	}
+	tgChannel := telegram.NewTelegramChannel(
+		telegoBot,
+		updates,
+		tgCfg,
+		telegram.CallbackHandlers{
+			OnPermission: func(reqID, decision string) {
+				decisionMap := map[string]acp.PermissionDecision{
+					"always": acp.PermissionAlways,
+					"once":   acp.PermissionThisTime,
+					"deny":   acp.PermissionDeny,
+				}
+				if d, ok := decisionMap[decision]; ok {
+					disp.RespondPermission(reqID, d)
+				}
+			},
+			OnBusySendNow:  disp.HandleBusySendNow,
+			OnResumeChoice: disp.ResolveResumeChoice,
+		},
+	)
 
 	g, gCtx := errgroup.WithContext(ctx)
+	_ = gCtx
 	g.Go(func() error {
-		return bridge.Run(gCtx)
+		return tgChannel.Start(disp.Handle)
 	})
 
 	slog.Info("bot started", "workspace", cfg.Agent.Workspace)

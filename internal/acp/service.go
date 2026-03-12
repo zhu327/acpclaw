@@ -821,50 +821,7 @@ func (s *AcpAgentService) Prompt(ctx context.Context, chatID int64, input Prompt
 		"text", util.LogTextPreview(input.Text, 200),
 	)
 
-	permMode := live.permMode
-	logEvents := shouldLogEventOutput(s.cfg.EventOutput)
-
-	live.client.SetCallbacks(
-		func(b ActivityBlock) {
-			if logEvents {
-				slog.Info("ACP activity event",
-					"chat_id", chatID,
-					"session_id", live.sessionID,
-					"kind", b.Kind,
-					"status", b.Status,
-					"detail", util.LogTextPreview(b.Detail, 200),
-					"text", util.LogTextPreview(b.Text, 200),
-				)
-			}
-			if onActivity != nil {
-				onActivity(chatID, b)
-			}
-		},
-		func(req PermissionRequest) <-chan PermissionResponse {
-			if logEvents {
-				slog.Info("ACP permission event",
-					"chat_id", chatID,
-					"session_id", live.sessionID,
-					"request_id", req.ID,
-					"tool", util.LogTextPreview(req.Tool, 200),
-				)
-			}
-			ch := make(chan PermissionResponse, 1)
-			if permMode == PermissionModeApprove {
-				ch <- PermissionResponse{Decision: PermissionAlways}
-				return ch
-			}
-			if permMode == PermissionModeDeny {
-				ch <- PermissionResponse{Decision: PermissionDeny}
-				return ch
-			}
-			if onPermission != nil {
-				return onPermission(chatID, req)
-			}
-			ch <- PermissionResponse{Decision: PermissionDeny}
-			return ch
-		},
-	)
+	s.setupPromptCallbacks(live, chatID, onActivity, onPermission)
 
 	live.client.StartCapture()
 	blocks := BuildContentBlocks(input)
@@ -881,6 +838,64 @@ func (s *AcpAgentService) Prompt(ctx context.Context, chatID int64, input Prompt
 		return reply, err
 	}
 	return reply, nil
+}
+
+// setupPromptCallbacks 配置 Prompt 执行时的 activity 和 permission 回调
+func (s *AcpAgentService) setupPromptCallbacks(
+	live *liveSession,
+	chatID int64,
+	onActivity func(int64, ActivityBlock),
+	onPermission func(int64, PermissionRequest) <-chan PermissionResponse,
+) {
+	logEvents := shouldLogEventOutput(s.cfg.EventOutput)
+	permMode := live.permMode
+
+	live.client.SetCallbacks(
+		func(b ActivityBlock) {
+			if logEvents {
+				slog.Info("ACP activity event",
+					"chat_id", chatID, "session_id", live.sessionID,
+					"kind", b.Kind, "status", b.Status,
+					"detail", util.LogTextPreview(b.Detail, 200),
+					"text", util.LogTextPreview(b.Text, 200),
+				)
+			}
+			if onActivity != nil {
+				onActivity(chatID, b)
+			}
+		},
+		func(req PermissionRequest) <-chan PermissionResponse {
+			if logEvents {
+				slog.Info("ACP permission event",
+					"chat_id", chatID, "session_id", live.sessionID,
+					"request_id", req.ID, "tool", util.LogTextPreview(req.Tool, 200),
+				)
+			}
+			return s.permissionResponseChan(permMode, chatID, req, onPermission)
+		},
+	)
+}
+
+func (s *AcpAgentService) permissionResponseChan(
+	permMode PermissionMode,
+	chatID int64,
+	req PermissionRequest,
+	onPermission func(int64, PermissionRequest) <-chan PermissionResponse,
+) <-chan PermissionResponse {
+	ch := make(chan PermissionResponse, 1)
+	switch permMode {
+	case PermissionModeApprove:
+		ch <- PermissionResponse{Decision: PermissionAlways}
+		return ch
+	case PermissionModeDeny:
+		ch <- PermissionResponse{Decision: PermissionDeny}
+		return ch
+	}
+	if onPermission != nil {
+		return onPermission(chatID, req)
+	}
+	ch <- PermissionResponse{Decision: PermissionDeny}
+	return ch
 }
 
 // ErrNoActiveSession is returned when there is no active session for the chat.

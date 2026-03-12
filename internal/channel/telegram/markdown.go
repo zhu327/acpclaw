@@ -1,21 +1,8 @@
-package bot
+package telegram
 
 import "strings"
 
 const maxChunkUTF16 = 4096
-
-var mdv2Replacer = strings.NewReplacer(
-	"_", "\\_", "*", "\\*", "[", "\\[", "]", "\\]",
-	"(", "\\(", ")", "\\)", "~", "\\~", "`", "\\`",
-	">", "\\>", "#", "\\#", "+", "\\+", "-", "\\-",
-	"=", "\\=", "|", "\\|", "{", "\\{", "}", "\\}",
-	".", "\\.", "!", "\\!",
-)
-
-// escapeMarkdownV2 escapes all special MarkdownV2 characters in s.
-func escapeMarkdownV2(s string) string {
-	return mdv2Replacer.Replace(s)
-}
 
 // MessageChunk represents a piece of a message ready to send to Telegram as MarkdownV2.
 type MessageChunk struct {
