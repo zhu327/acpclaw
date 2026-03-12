@@ -18,6 +18,13 @@ type Config struct {
 	Permissions PermissionsConfig `yaml:"permissions"`
 	Logging     LoggingConfig     `yaml:"logging"`
 	Memory      MemoryConfig      `yaml:"memory"`
+	Cron        CronConfig        `yaml:"cron"`
+}
+
+// CronConfig holds cron system configuration.
+type CronConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Dir     string `yaml:"dir"`
 }
 
 // MemoryConfig holds memory system configuration.
@@ -70,6 +77,7 @@ func Load(path string) (*Config, error) {
 		// Expand paths from YAML
 		cfg.Memory.Dir = util.ExpandPath(cfg.Memory.Dir)
 		cfg.Memory.HistoryDir = util.ExpandPath(cfg.Memory.HistoryDir)
+		cfg.Cron.Dir = util.ExpandPath(cfg.Cron.Dir)
 	}
 	if err := applyEnv(cfg); err != nil {
 		return nil, err
@@ -121,6 +129,10 @@ func defaults() *Config {
 			HistoryDir:    filepath.Join(home, ".acpclaw", "history"),
 			AutoSummarize: false,
 		},
+		Cron: CronConfig{
+			Enabled: false,
+			Dir:     filepath.Join(home, ".acpclaw", "cron"),
+		},
 	}
 }
 
@@ -169,6 +181,12 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("ACPCLAW_HISTORY_DIR"); v != "" {
 		cfg.Memory.HistoryDir = util.ExpandPath(v)
+	}
+	if v := os.Getenv("ACPCLAW_CRON_ENABLED"); v != "" {
+		cfg.Cron.Enabled = v == "1" || strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("ACPCLAW_CRON_DIR"); v != "" {
+		cfg.Cron.Dir = util.ExpandPath(v)
 	}
 	return nil
 }

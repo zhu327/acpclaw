@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/zhu327/acpclaw/internal/cron"
 	internalmcp "github.com/zhu327/acpclaw/internal/mcp"
 	"github.com/zhu327/acpclaw/internal/memory"
 	"github.com/zhu327/acpclaw/internal/util"
@@ -38,7 +39,13 @@ func main() {
 		}()
 	}
 
-	s := internalmcp.NewServerWithMemory(memorySvc)
+	cronDir := util.ExpandPath(os.Getenv("ACPCLAW_CRON_DIR"))
+	if cronDir == "" {
+		cronDir = filepath.Join(home, ".acpclaw", "cron")
+	}
+	cronStore := cron.NewStore(cronDir)
+
+	s := internalmcp.NewServerWithMemoryAndCron(memorySvc, cronStore)
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		os.Exit(1)

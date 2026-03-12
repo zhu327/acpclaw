@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,8 +20,10 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/mymmrac/telego"
 	"github.com/zhu327/acpclaw/internal/acp"
+	"github.com/zhu327/acpclaw/internal/channel"
 	"github.com/zhu327/acpclaw/internal/channel/telegram"
 	"github.com/zhu327/acpclaw/internal/config"
+	"github.com/zhu327/acpclaw/internal/cron"
 	"github.com/zhu327/acpclaw/internal/dispatcher"
 	"github.com/zhu327/acpclaw/internal/memory"
 	"golang.org/x/net/proxy"
@@ -74,13 +77,17 @@ func run() error {
 					Command: mcpChannelPath,
 					Args:    []string{},
 					Env: func() []acpsdk.EnvVariable {
+						var envs []acpsdk.EnvVariable
 						if cfg.Memory.Enabled {
-							return []acpsdk.EnvVariable{
-								{Name: "ACPCLAW_MEMORY_DIR", Value: cfg.Memory.Dir},
-								{Name: "ACPCLAW_HISTORY_DIR", Value: cfg.Memory.HistoryDir},
-							}
+							envs = append(envs,
+								acpsdk.EnvVariable{Name: "ACPCLAW_MEMORY_DIR", Value: cfg.Memory.Dir},
+								acpsdk.EnvVariable{Name: "ACPCLAW_HISTORY_DIR", Value: cfg.Memory.HistoryDir},
+							)
 						}
-						return []acpsdk.EnvVariable{}
+						if cfg.Cron.Enabled {
+							envs = append(envs, acpsdk.EnvVariable{Name: "ACPCLAW_CRON_DIR", Value: cfg.Cron.Dir})
+						}
+						return envs
 					}(),
 				},
 			},
@@ -171,6 +178,34 @@ func run() error {
 
 	g, gCtx := errgroup.WithContext(ctx)
 	_ = gCtx
+
+	if cfg.Cron.Enabled {
+		cronStore := cron.NewStore(cfg.Cron.Dir)
+		scheduler := cron.NewScheduler(cronStore, 30*time.Second)
+
+		scheduler.OnTrigger(func(job cron.Job) {
+			if job.Channel != "telegram" {
+				slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
+				return
+			}
+
+			msg := channel.InboundMessage{
+				ChatID: job.ChatID,
+				Text:   job.Message,
+			}
+
+			chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
+			resp := telegram.NewBackgroundResponder(telegoBot, chatIDInt)
+			disp.Handle(msg, resp)
+		})
+
+		g.Go(func() error {
+			scheduler.Start(gCtx)
+			return nil
+		})
+		slog.Info("cron scheduler started", "dir", cfg.Cron.Dir)
+	}
+
 	g.Go(func() error {
 		return tgChannel.Start(disp.Handle)
 	})
