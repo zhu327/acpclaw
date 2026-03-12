@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/zhu327/acpclaw/internal/acp"
 )
 
 // Service combines Store and History into a unified memory service.
@@ -111,8 +109,18 @@ const (
 	maxTranscriptLenForSummarize = 50000
 )
 
+// Summarizer 接口用于生成会话摘要
+type Summarizer interface {
+	// Summarize 接收转录文本，返回摘要内容
+	Summarize(ctx context.Context, transcript string) (summary string, err error)
+}
+
 // SummarizeSession reads unsummarized history, prompts the agent for a summary, and saves an episode.
-func (s *Service) SummarizeSession(ctx context.Context, chatID string, agentSvc acp.AgentService) error {
+func (s *Service) SummarizeSession(ctx context.Context, chatID string, summarizer Summarizer) error {
+	if summarizer == nil {
+		return nil
+	}
+
 	transcript, err := s.history.ReadUnsummarized(chatID)
 	if err != nil || len(transcript) < minTranscriptLenForSummarize {
 		return nil // 对话太短，跳过
@@ -121,64 +129,25 @@ func (s *Service) SummarizeSession(ctx context.Context, chatID string, agentSvc 
 		transcript = transcript[len(transcript)-maxTranscriptLenForSummarize:]
 	}
 
-	chatIDInt, err := parseChatIDForAgent(chatID)
+	summary, err := summarizer.Summarize(ctx, transcript)
 	if err != nil {
-		return err
+		return fmt.Errorf("summarize: %w", err)
 	}
-
-	prompt := buildSummarizePrompt(transcript)
-	reply, err := agentSvc.Prompt(ctx, chatIDInt, acp.PromptInput{Text: prompt})
-	if err != nil {
-		return fmt.Errorf("summarize prompt: %w", err)
-	}
-	if reply == nil || reply.Text == "" {
+	if summary == "" {
 		return nil
 	}
 
 	entry := MemoryEntry{
 		ID:       buildEpisodeFileName(chatID),
 		Category: "episode",
-		Title:    extractTitle(reply.Text),
-		Content:  reply.Text,
+		Title:    extractTitle(summary),
+		Content:  summary,
 		Date:     time.Now().Format("2006-01-02"),
 	}
 	if err := s.Save(entry); err != nil {
 		return fmt.Errorf("save episode: %w", err)
 	}
 	return s.history.MarkSummarized(chatID)
-}
-
-func parseChatIDForAgent(chatID string) (int64, error) {
-	var n int64
-	if _, err := fmt.Sscanf(chatID, "%d", &n); err != nil {
-		return 0, fmt.Errorf("invalid chatID %q: %w", chatID, err)
-	}
-	return n, nil
-}
-
-func buildSummarizePrompt(transcript string) string {
-	return fmt.Sprintf(`请将以下对话总结为结构化摘要，直接输出 Markdown 格式如下:
----
-title: "<简洁标题>"
-date: %s
-tags: [<相关标签>]
----
-
-## Summary
-<2-4 句话概述>
-
-## Key Topics
-- <主题 1>
-- <主题 2>
-
-## Decisions & Outcomes
-- <决定或结果>
-
-## Notable Information
-- <值得记住的信息>
-
-对话内容:
-%s`, time.Now().Format("2006-01-02"), transcript)
 }
 
 // sanitizeForFilename 移除非字母数字字符，用于生成安全的文件名

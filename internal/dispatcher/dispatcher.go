@@ -15,7 +15,6 @@ import (
 	"github.com/zhu327/acpclaw/internal/acp"
 	"github.com/zhu327/acpclaw/internal/channel"
 	"github.com/zhu327/acpclaw/internal/memory"
-	"github.com/zhu327/acpclaw/internal/util"
 )
 
 // Config holds Dispatcher configuration.
@@ -472,7 +471,7 @@ func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID int64, inde
 
 // IsAllowed checks if a user is in the allowlist.
 func (d *Dispatcher) IsAllowed(userID int64, username string) bool {
-	return util.IsAllowed(util.AllowlistConfig{
+	return IsAllowed(AllowlistConfig{
 		AllowedUserIDs:   d.cfg.AllowedUserIDs,
 		AllowedUsernames: d.cfg.AllowedUsernames,
 	}, userID, username)

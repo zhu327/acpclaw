@@ -153,7 +153,8 @@ func (d *Dispatcher) handleNew(ctx context.Context, chatID int64, args []string,
 	}
 	if d.cfg.AutoSummarize && d.memorySvc != nil {
 		chatIDStr := strconv.FormatInt(chatID, 10)
-		if err := d.memorySvc.SummarizeSession(ctx, chatIDStr, d.agentSvc); err != nil {
+		summarizer := acp.NewAgentSummarizer(d.agentSvc, chatID)
+		if err := d.memorySvc.SummarizeSession(ctx, chatIDStr, summarizer); err != nil {
 			slog.Warn("failed to summarize session", "chat_id", chatID, "error", err)
 		}
 	}
@@ -179,24 +180,14 @@ func (d *Dispatcher) handleSession(ctx context.Context, chatID int64, resp chann
 		resp.Reply(channel.OutboundMessage{Text: "No sessions found."}) //nolint:errcheck
 		return
 	}
-	activeID := ""
-	if active := d.agentSvc.ActiveSession(chatID); active != nil {
-		activeID = active.SessionID
-	}
+	activeID := d.activeSessionID(chatID)
 	var lines []string
 	for i, s := range sessions {
-		name := s.Title
-		if name == "" && s.Workspace != "" {
-			name = s.Workspace
-		}
-		if name == "" {
-			name = s.SessionID
-		}
 		marker := ""
 		if s.SessionID == activeID {
 			marker = " (active)"
 		}
-		lines = append(lines, fmt.Sprintf("%d. %s [%s]%s", i+1, name, s.SessionID, marker))
+		lines = append(lines, fmt.Sprintf("%d. %s [%s]%s", i+1, sessionDisplayName(s), s.SessionID, marker))
 	}
 	resp.Reply(channel.OutboundMessage{Text: strings.Join(lines, "\n")}) //nolint:errcheck
 }
@@ -211,45 +202,14 @@ func (d *Dispatcher) handleResume(
 	if !d.handleListSessionsError(resp, err) {
 		return
 	}
-	activeID := ""
-	if active := d.agentSvc.ActiveSession(chatID); active != nil {
-		activeID = active.SessionID
-	}
-	var filtered []acp.SessionInfo
-	for _, s := range sessions {
-		if s.SessionID != activeID {
-			filtered = append(filtered, s)
-		}
-	}
+	filtered := filterNonActiveSessions(sessions, d.activeSessionID(chatID))
 	if len(filtered) == 0 {
 		resp.Reply(channel.OutboundMessage{Text: "No resumable sessions found."}) //nolint:errcheck
 		return
 	}
 
 	if len(args) > 0 {
-		n := 0
-		if _, err := fmt.Sscanf(args[0], "%d", &n); err != nil || n < 1 || n > len(filtered) {
-			resp.Reply(channel.OutboundMessage{Text: "Invalid session number."}) //nolint:errcheck
-			return
-		}
-		s := filtered[n-1]
-		if err := d.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
-			if errors.Is(err, acp.ErrLoadSessionNotSupported) {
-				_ = resp.Reply(
-					channel.OutboundMessage{Text: "Session resume is not supported by the current agent."},
-				)
-				return
-			}
-			if errors.Is(err, acp.ErrSessionNotFound) {
-				resp.Reply(channel.OutboundMessage{Text: "Session expired or no longer available."}) //nolint:errcheck
-				return
-			}
-			resp.Reply(channel.OutboundMessage{Text: "❌ Failed to resume session."}) //nolint:errcheck
-			return
-		}
-		resp.Reply(channel.OutboundMessage{ //nolint:errcheck
-			Text: fmt.Sprintf("Session resumed: `%s` in `%s`", s.SessionID, s.Workspace),
-		})
+		d.handleResumeByIndex(ctx, chatID, args, resp, filtered)
 		return
 	}
 
@@ -273,6 +233,51 @@ func sessionDisplayName(s acp.SessionInfo) string {
 		return s.Workspace
 	}
 	return s.SessionID
+}
+
+// activeSessionID 返回当前活跃会话 ID，无活跃会话时返回空字符串
+func (d *Dispatcher) activeSessionID(chatID int64) string {
+	if active := d.agentSvc.ActiveSession(chatID); active != nil {
+		return active.SessionID
+	}
+	return ""
+}
+
+func filterNonActiveSessions(sessions []acp.SessionInfo, activeID string) []acp.SessionInfo {
+	var out []acp.SessionInfo
+	for _, s := range sessions {
+		if s.SessionID != activeID {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// handleResumeByIndex 处理带索引的 /resume 命令
+func (d *Dispatcher) handleResumeByIndex(
+	ctx context.Context, chatID int64, args []string, resp channel.Responder, filtered []acp.SessionInfo,
+) {
+	var n int
+	if _, err := fmt.Sscanf(args[0], "%d", &n); err != nil || n < 1 || n > len(filtered) {
+		resp.Reply(channel.OutboundMessage{Text: "Invalid session number."}) //nolint:errcheck
+		return
+	}
+	s := filtered[n-1]
+	if err := d.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
+		if errors.Is(err, acp.ErrLoadSessionNotSupported) {
+			_ = resp.Reply(channel.OutboundMessage{Text: "Session resume is not supported by the current agent."})
+			return
+		}
+		if errors.Is(err, acp.ErrSessionNotFound) {
+			resp.Reply(channel.OutboundMessage{Text: "Session expired or no longer available."}) //nolint:errcheck
+			return
+		}
+		resp.Reply(channel.OutboundMessage{Text: "❌ Failed to resume session."}) //nolint:errcheck
+		return
+	}
+	resp.Reply(channel.OutboundMessage{ //nolint:errcheck
+		Text: fmt.Sprintf("Session resumed: `%s` in `%s`", s.SessionID, s.Workspace),
+	})
 }
 
 func (d *Dispatcher) handleCancel(ctx context.Context, chatID int64, resp channel.Responder) {

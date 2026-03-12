@@ -74,3 +74,14 @@ make lint    # runs golangci-lint
 | `ACP_LOG_FORMAT` | text / json (default: text) |
 | `ACP_TELEGRAM_CHANNEL_ALLOW_PATH` | Set to any value to enable file path sending |
 | `ACP_TELEGRAM_CHANNEL_ALLOWED_BASE_DIR` | Absolute base directory allowed for `path` reads when allow-path is enabled |
+
+## Context File
+
+acpclaw maintains a context file at `~/.acpclaw/last-context.json` to share the current chat context with MCP tools. This file is automatically updated when you create or load a session and allows MCP cron tools to work without explicitly specifying channel/chatId parameters.
+
+The file contains:
+- `channel`: Current channel (e.g., "telegram")
+- `chatId`: Current chat ID
+- `updatedAt`: Last update timestamp
+
+**Note:** If multiple chats are active simultaneously, the file will contain the most recently active chat's context. Updates are serialized to prevent corruption, but in high-concurrency scenarios the "last" context reflects whichever chat completed its update most recently.

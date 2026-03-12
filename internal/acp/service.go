@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,7 +18,6 @@ import (
 	"unsafe"
 
 	acpsdk "github.com/coder/acp-go-sdk"
-	"github.com/zhu327/acpclaw/internal/util"
 )
 
 // ServiceConfig configures the ACP agent service.
@@ -29,6 +29,7 @@ type ServiceConfig struct {
 	PermissionMode PermissionMode
 	EventOutput    string // "stdout" or "off"
 	MCPServers     []acpsdk.McpServer
+	ChannelName    string // channel identifier (e.g., "telegram", "slack") for context tracking
 	// AgentEnv is the explicit set of env var names to pass to agent subprocesses.
 	// When nil, a safe default allowlist is used (PATH, HOME, LANG, etc.).
 	// Set to an empty slice to pass no env vars at all.
@@ -491,7 +492,20 @@ func (s *AcpAgentService) createNewSession(
 		UpdatedAt: time.Now(),
 	})
 	s.mu.Unlock()
+
+	s.writeSessionContext(chatID)
 	return nil
+}
+
+// writeSessionContext 写入会话上下文供 MCP 工具读取，失败不影响主流程
+func (s *AcpAgentService) writeSessionContext(chatID int64) {
+	channel := s.cfg.ChannelName
+	if channel == "" {
+		channel = "telegram" // backward compatibility default
+	}
+	if err := WriteChatContext(channel, strconv.FormatInt(chatID, 10)); err != nil {
+		slog.Warn("failed to write session context", "chatID", chatID, "channel", channel, "error", err)
+	}
 }
 
 // ensureProcess ensures an active ACP process for chatID. Caller must hold sessionLock.
@@ -618,6 +632,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID int64, session
 	})
 	s.mu.Unlock()
 
+	s.writeSessionContext(chatID)
 	return nil
 }
 
@@ -818,7 +833,7 @@ func (s *AcpAgentService) Prompt(ctx context.Context, chatID int64, input Prompt
 	slog.Info("Prompt to ACP",
 		"chat_id", chatID,
 		"session_id", live.sessionID,
-		"text", util.LogTextPreview(input.Text, 200),
+		"text", logTextPreview(input.Text, 200),
 	)
 
 	s.setupPromptCallbacks(live, chatID, onActivity, onPermission)
@@ -856,8 +871,8 @@ func (s *AcpAgentService) setupPromptCallbacks(
 				slog.Info("ACP activity event",
 					"chat_id", chatID, "session_id", live.sessionID,
 					"kind", b.Kind, "status", b.Status,
-					"detail", util.LogTextPreview(b.Detail, 200),
-					"text", util.LogTextPreview(b.Text, 200),
+					"detail", logTextPreview(b.Detail, 200),
+					"text", logTextPreview(b.Text, 200),
 				)
 			}
 			if onActivity != nil {
@@ -868,7 +883,7 @@ func (s *AcpAgentService) setupPromptCallbacks(
 			if logEvents {
 				slog.Info("ACP permission event",
 					"chat_id", chatID, "session_id", live.sessionID,
-					"request_id", req.ID, "tool", util.LogTextPreview(req.Tool, 200),
+					"request_id", req.ID, "tool", logTextPreview(req.Tool, 200),
 				)
 			}
 			return s.permissionResponseChan(permMode, chatID, req, onPermission)
@@ -985,4 +1000,16 @@ func BuildContentBlocks(input PromptInput) []acpsdk.ContentBlock {
 		blocks = append(blocks, acpsdk.TextBlock(payload))
 	}
 	return blocks
+}
+
+// logTextPreview returns a collapsed, truncated preview of text for log output
+func logTextPreview(text string, maxLen int) string {
+	collapsed := strings.Join(strings.Fields(text), " ")
+	if collapsed == "" {
+		return "<empty>"
+	}
+	if len(collapsed) <= maxLen {
+		return collapsed
+	}
+	return collapsed[:maxLen] + "..."
 }

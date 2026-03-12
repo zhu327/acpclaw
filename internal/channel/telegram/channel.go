@@ -13,7 +13,7 @@ import (
 	tu "github.com/mymmrac/telego/telegoutil"
 	"github.com/zhu327/acpclaw/internal/acp"
 	"github.com/zhu327/acpclaw/internal/channel"
-	"github.com/zhu327/acpclaw/internal/util"
+	"github.com/zhu327/acpclaw/internal/dispatcher"
 )
 
 // ChannelConfig holds Telegram-specific configuration.
@@ -31,11 +31,12 @@ type CallbackHandlers struct {
 
 // TelegramChannel implements channel.Channel for the Telegram platform.
 type TelegramChannel struct {
-	bot       *telego.Bot
-	handler   *th.BotHandler
-	cfg       ChannelConfig
-	updates   <-chan telego.Update
-	callbacks CallbackHandlers
+	bot              *telego.Bot
+	handler          *th.BotHandler
+	cfg              ChannelConfig
+	updates          <-chan telego.Update
+	callbacks        CallbackHandlers
+	allowlistChecker dispatcher.AllowlistChecker
 }
 
 var _ channel.Channel = (*TelegramChannel)(nil)
@@ -46,12 +47,14 @@ func NewTelegramChannel(
 	updates <-chan telego.Update,
 	cfg ChannelConfig,
 	callbacks CallbackHandlers,
+	allowlistChecker dispatcher.AllowlistChecker,
 ) *TelegramChannel {
 	return &TelegramChannel{
-		bot:       bot,
-		updates:   updates,
-		cfg:       cfg,
-		callbacks: callbacks,
+		bot:              bot,
+		updates:          updates,
+		cfg:              cfg,
+		callbacks:        callbacks,
+		allowlistChecker: allowlistChecker,
 	}
 }
 
@@ -342,10 +345,10 @@ func (c *TelegramChannel) answerCallback(query telego.CallbackQuery, text string
 }
 
 func (c *TelegramChannel) isAllowed(userID int64, username string) bool {
-	return util.IsAllowed(util.AllowlistConfig{
-		AllowedUserIDs:   c.cfg.AllowedUserIDs,
-		AllowedUsernames: c.cfg.AllowedUsernames,
-	}, userID, username)
+	if c.allowlistChecker == nil {
+		return true
+	}
+	return c.allowlistChecker.IsAllowed(userID, username)
 }
 
 func (c *TelegramChannel) sendPlainText(chatID int64, text string) {

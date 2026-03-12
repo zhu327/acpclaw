@@ -26,6 +26,7 @@ import (
 	"github.com/zhu327/acpclaw/internal/cron"
 	"github.com/zhu327/acpclaw/internal/dispatcher"
 	"github.com/zhu327/acpclaw/internal/memory"
+	"github.com/zhu327/acpclaw/internal/util"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
 )
@@ -63,6 +64,11 @@ func run() error {
 	}
 	mcpChannelPath := filepath.Join(filepath.Dir(exe), "mcp-channel")
 
+	// 获取默认的 .acpclaw 目录路径
+	memoryDir := util.GetAcpclawMemoryDir()
+	historyDir := util.GetAcpclawHistoryDir()
+	cronDir := util.GetAcpclawCronDir()
+
 	agentCmd := strings.Fields(cfg.Agent.Command)
 	svcCfg := acp.ServiceConfig{
 		AgentCommand:   agentCmd,
@@ -70,6 +76,7 @@ func run() error {
 		ConnectTimeout: time.Duration(cfg.Agent.ConnectTimeout) * time.Second,
 		PermissionMode: acp.PermissionMode(cfg.Permissions.Mode),
 		EventOutput:    cfg.Permissions.EventOutput,
+		ChannelName:    "telegram", // TODO: make configurable when supporting multiple channels
 		MCPServers: []acpsdk.McpServer{
 			{
 				Stdio: &acpsdk.McpServerStdio{
@@ -80,12 +87,12 @@ func run() error {
 						var envs []acpsdk.EnvVariable
 						if cfg.Memory.Enabled {
 							envs = append(envs,
-								acpsdk.EnvVariable{Name: "ACPCLAW_MEMORY_DIR", Value: cfg.Memory.Dir},
-								acpsdk.EnvVariable{Name: "ACPCLAW_HISTORY_DIR", Value: cfg.Memory.HistoryDir},
+								acpsdk.EnvVariable{Name: "ACPCLAW_MEMORY_DIR", Value: memoryDir},
+								acpsdk.EnvVariable{Name: "ACPCLAW_HISTORY_DIR", Value: historyDir},
 							)
 						}
 						if cfg.Cron.Enabled {
-							envs = append(envs, acpsdk.EnvVariable{Name: "ACPCLAW_CRON_DIR", Value: cfg.Cron.Dir})
+							envs = append(envs, acpsdk.EnvVariable{Name: "ACPCLAW_CRON_DIR", Value: cronDir})
 						}
 						return envs
 					}(),
@@ -126,7 +133,7 @@ func run() error {
 	disp.SetAgentService(agentSvc)
 
 	if cfg.Memory.Enabled {
-		memorySvc, err := memory.NewService(cfg.Memory.Dir, cfg.Memory.HistoryDir)
+		memorySvc, err := memory.NewService(memoryDir, historyDir)
 		if err != nil {
 			slog.Warn("memory service init failed", "error", err)
 		} else {
@@ -137,7 +144,7 @@ func run() error {
 					slog.Error("failed to close memory service", "error", err)
 				}
 			}()
-			slog.Info("memory service enabled", "dir", cfg.Memory.Dir)
+			slog.Info("memory service enabled", "dir", memoryDir)
 		}
 	}
 
@@ -156,6 +163,10 @@ func run() error {
 		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
 		AllowedUsernames: cfg.Telegram.AllowedUsernames,
 	}
+	allowlistChecker := dispatcher.NewAllowlistChecker(dispatcher.AllowlistConfig{
+		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
+		AllowedUsernames: cfg.Telegram.AllowedUsernames,
+	})
 	tgChannel := telegram.NewTelegramChannel(
 		telegoBot,
 		updates,
@@ -174,13 +185,14 @@ func run() error {
 			OnBusySendNow:  disp.HandleBusySendNow,
 			OnResumeChoice: disp.ResolveResumeChoice,
 		},
+		allowlistChecker,
 	)
 
 	g, gCtx := errgroup.WithContext(ctx)
 	_ = gCtx
 
 	if cfg.Cron.Enabled {
-		cronStore := cron.NewStore(cfg.Cron.Dir)
+		cronStore := cron.NewStore(cronDir)
 		scheduler := cron.NewScheduler(cronStore, 30*time.Second)
 
 		scheduler.OnTrigger(func(job cron.Job) {
@@ -203,7 +215,7 @@ func run() error {
 			scheduler.Start(gCtx)
 			return nil
 		})
-		slog.Info("cron scheduler started", "dir", cfg.Cron.Dir)
+		slog.Info("cron scheduler started", "dir", cronDir)
 	}
 
 	g.Go(func() error {
