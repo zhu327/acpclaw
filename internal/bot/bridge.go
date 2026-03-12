@@ -35,76 +35,59 @@ const (
 	busyAlreadySentText           = "Already sent."
 	busyCancelFailedText          = "Cancel failed."
 	sessionResumeNotSupportedText = "Session resume is not supported by the current agent."
+	sessionExpiredText            = "Session expired or no longer available."
 )
 
-// buildPermCallbackData builds Python-style callback data: perm|reqID|action
 func buildPermCallbackData(reqID, action string) string {
 	return fmt.Sprintf("perm|%s|%s", reqID, action)
 }
 
-// buildBusyCallbackData builds Python-style callback data: busy|token
 func buildBusyCallbackData(token string) string {
 	return fmt.Sprintf("busy|%s", token)
 }
 
-// pendingPrompt holds a queued message when the agent is busy.
 type pendingPrompt struct {
 	input        acp.PromptInput
 	chatID       int64
-	token        string // UUID for "Send now" callback matching
-	notifyMsgID  int    // message ID of the busy notification
-	replyToMsgID int    // original message ID to reply to
+	token        string
+	notifyMsgID  int
+	replyToMsgID int
 }
 
-// Config holds bot configuration.
 type Config struct {
 	AllowedUserIDs   []int64
 	AllowedUsernames []string
 	DefaultWorkspace string
 }
 
-// Bridge connects Telegram to AgentService.
 type Bridge struct {
-	bot                *telego.Bot
-	handler            *th.BotHandler
-	agentSvc           acp.AgentService
-	cfg                Config
-	ctx                context.Context
-	cancel             context.CancelFunc
-	pendingPerms       map[string]chan acp.PermissionResponse
-	permMu             sync.Mutex
-	pendingByChat      map[int64]*pendingPrompt
-	pendingMu          sync.Mutex
-	chatLocks          sync.Map // map[int64]*sync.Mutex — per-chat prompt lock
-	implicitStartLocks sync.Map // map[int64]*sync.Mutex — per-chat implicit session start lock
-	// cancelRequested is set when "Send now" is clicked so runPromptLoop skips the
-	// cancellation error. Entries are removed by LoadAndDelete in runPromptLoop.
-	// If a user clicks "Send now" but never sends another message, the entry remains
-	// until the next prompt for that chat. This is a minor, bounded memory leak.
-	cancelRequested      sync.Map // map[int64]struct{}
-	pendingResumeChoices map[int64][]acp.SessionInfo
-	resumeChoicesMu      sync.Mutex
-	// onBusyAccessDenied is set by tests to record access-denied callback. Nil in production.
-	onBusyAccessDenied func(answer string)
-	// onBusyStale is set by tests to record stale callback handling. Nil in production.
-	onBusyStale func(answer string, clearMarkup bool)
-	// onBusyCancelFailure is set by tests to record cancel-failure path. Nil in production.
-	onBusyCancelFailure func(answer string)
-	// onBusyMatchingTokenDone is set by tests to sync after matching-token callback. Nil in production.
+	bot                     *telego.Bot
+	handler                 *th.BotHandler
+	agentSvc                acp.AgentService
+	cfg                     Config
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	pendingPerms            map[string]chan acp.PermissionResponse
+	permMu                  sync.Mutex
+	pendingByChat           map[int64]*pendingPrompt
+	pendingMu               sync.Mutex
+	chatLocks               sync.Map
+	implicitStartLocks      sync.Map
+	cancelRequested         sync.Map
+	pendingResumeChoices    map[int64][]acp.SessionInfo
+	resumeChoicesMu         sync.Mutex
+	onBusyAccessDenied      func(answer string)
+	onBusyStale             func(answer string, clearMarkup bool)
+	onBusyCancelFailure     func(answer string)
 	onBusyMatchingTokenDone func()
-	// onClearBusyNotification is set by tests to record drain-path clear behavior. Nil in production.
 	onClearBusyNotification func(clearMarkupOnly bool)
-	// onPermCallbackAnswer is set by tests to record permission callback answer. Nil in production.
-	onPermCallbackAnswer func(answer string)
-	// onResumeCallbackAnswer is set by tests to record resume callback answer (e.g. invalid selection). Nil in production.
-	onResumeCallbackAnswer func(answer string)
-
-	pendingPermActions map[string][]acp.PermissionDecision // reqID -> available actions for validation
+	onPermCallbackAnswer    func(answer string)
+	onResumeCallbackAnswer  func(answer string)
+	pendingPermActions      map[string][]acp.PermissionDecision
 }
 
 const permissionRequestTTL = 5 * time.Minute
 
-// NewBridge creates a new Bridge.
 func NewBridge(bot *telego.Bot, agentSvc acp.AgentService, cfg Config) *Bridge {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Bridge{
@@ -121,29 +104,24 @@ func NewBridge(bot *telego.Bot, agentSvc acp.AgentService, cfg Config) *Bridge {
 	return b
 }
 
-// chatMutex returns the per-chat mutex for prompt serialization.
 func (b *Bridge) chatMutex(chatID int64) *sync.Mutex {
 	v, _ := b.chatLocks.LoadOrStore(chatID, &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 
-// implicitStartMutex returns the per-chat mutex for implicit session start.
 func (b *Bridge) implicitStartMutex(chatID int64) *sync.Mutex {
 	v, _ := b.implicitStartLocks.LoadOrStore(chatID, &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 
-// randomToken returns a 16-byte cryptographically random hex string.
 func randomToken() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// Fallback: time-based token (weaker, but avoids panic on Read failure)
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
 }
 
-// queueBusyPrompt stores the input as pending and sends a busy notification with "Send now" button.
 func (b *Bridge) queueBusyPrompt(ctx context.Context, chatID int64, input acp.PromptInput, replyToMsgID int) {
 	token := randomToken()
 
@@ -157,39 +135,45 @@ func (b *Bridge) queueBusyPrompt(ctx context.Context, chatID int64, input acp.Pr
 	}
 	b.pendingMu.Unlock()
 
-	if old != nil && old.notifyMsgID != 0 && b.bot != nil {
-		_, _ = b.bot.EditMessageReplyMarkup(ctx, &telego.EditMessageReplyMarkupParams{
-			ChatID:      tu.ID(chatID),
-			MessageID:   old.notifyMsgID,
-			ReplyMarkup: tu.InlineKeyboard(),
-		})
-	}
-
-	if b.bot != nil {
-		keyboard := tu.InlineKeyboard(
-			tu.InlineKeyboardRow(
-				tu.InlineKeyboardButton(busySendNowButtonText).WithCallbackData(buildBusyCallbackData(token)),
-			),
-		)
-		text := "⏳ Agent is busy. Your message is queued."
-		params := tu.Message(tu.ID(chatID), text).WithReplyMarkup(keyboard)
-		if replyToMsgID > 0 {
-			params.ReplyParameters = &telego.ReplyParameters{
-				MessageID: replyToMsgID,
-			}
-		}
-		sent, err := b.bot.SendMessage(ctx, params)
-		if err == nil {
-			b.pendingMu.Lock()
-			if p := b.pendingByChat[chatID]; p != nil && p.token == token {
-				p.notifyMsgID = sent.MessageID
-			}
-			b.pendingMu.Unlock()
-		}
-	}
+	b.clearOldBusyNotification(ctx, chatID, old)
+	b.sendBusyNotification(ctx, chatID, token, replyToMsgID)
 }
 
-// popPending removes and returns the pending prompt for the chat, if any.
+func (b *Bridge) clearOldBusyNotification(ctx context.Context, chatID int64, old *pendingPrompt) {
+	if old == nil || old.notifyMsgID == 0 || b.bot == nil {
+		return
+	}
+	_, _ = b.bot.EditMessageReplyMarkup(ctx, &telego.EditMessageReplyMarkupParams{
+		ChatID:      tu.ID(chatID),
+		MessageID:   old.notifyMsgID,
+		ReplyMarkup: tu.InlineKeyboard(),
+	})
+}
+
+func (b *Bridge) sendBusyNotification(ctx context.Context, chatID int64, token string, replyToMsgID int) {
+	if b.bot == nil {
+		return
+	}
+	keyboard := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			tu.InlineKeyboardButton(busySendNowButtonText).WithCallbackData(buildBusyCallbackData(token)),
+		),
+	)
+	params := tu.Message(tu.ID(chatID), "⏳ Agent is busy. Your message is queued.").WithReplyMarkup(keyboard)
+	if replyToMsgID > 0 {
+		params.ReplyParameters = &telego.ReplyParameters{MessageID: replyToMsgID}
+	}
+	sent, err := b.bot.SendMessage(ctx, params)
+	if err != nil {
+		return
+	}
+	b.pendingMu.Lock()
+	if p := b.pendingByChat[chatID]; p != nil && p.token == token {
+		p.notifyMsgID = sent.MessageID
+	}
+	b.pendingMu.Unlock()
+}
+
 func (b *Bridge) popPending(chatID int64) *pendingPrompt {
 	b.pendingMu.Lock()
 	p := b.pendingByChat[chatID]
@@ -198,9 +182,6 @@ func (b *Bridge) popPending(chatID int64) *pendingPrompt {
 	return p
 }
 
-// clearBusyNotification clears the busy inline keyboard markup when pending is about to be processed.
-// Python parity: drain path only clears markup (does not rewrite text to "✅ Sent.").
-// notifyMsgID is read under pendingMu to synchronize with handleBusyCallback.
 func (b *Bridge) clearBusyNotification(ctx context.Context, p *pendingPrompt) {
 	if b.onClearBusyNotification != nil && p != nil {
 		b.onClearBusyNotification(true)
@@ -221,8 +202,6 @@ func (b *Bridge) clearBusyNotification(ctx context.Context, p *pendingPrompt) {
 	})
 }
 
-// IsAllowed returns true if the user is allowed to use the bot.
-// If no allowlist is configured, all users are allowed.
 func (b *Bridge) IsAllowed(userID int64, username string) bool {
 	if len(b.cfg.AllowedUserIDs) == 0 && len(b.cfg.AllowedUsernames) == 0 {
 		return true
@@ -241,8 +220,6 @@ func (b *Bridge) IsAllowed(userID int64, username string) bool {
 	return false
 }
 
-// RegisterHandlers registers all handlers with the given updates channel.
-// No-op if bot is nil (e.g. in tests). Returns error if handler creation fails.
 func (b *Bridge) RegisterHandlers(updates <-chan telego.Update) error {
 	if b.bot == nil {
 		return nil
@@ -260,7 +237,6 @@ func (b *Bridge) RegisterHandlers(updates <-chan telego.Update) error {
 	return nil
 }
 
-// Run starts the bot handler. Blocks until ctx is done, then performs graceful shutdown.
 func (b *Bridge) Run(ctx context.Context) error {
 	if b.handler == nil {
 		return fmt.Errorf("handler not initialized: call RegisterHandlers first")
@@ -275,7 +251,6 @@ func (b *Bridge) Run(ctx context.Context) error {
 	return b.handler.StopWithContext(shutdownCtx)
 }
 
-// RespondPermission sends a permission decision for testing or external use.
 func (b *Bridge) RespondPermission(reqID string, decision acp.PermissionDecision) {
 	b.permMu.Lock()
 	ch, ok := b.pendingPerms[reqID]
@@ -290,13 +265,17 @@ func (b *Bridge) RespondPermission(reqID string, decision acp.PermissionDecision
 	}
 }
 
+func defaultPermissionActions(actions []acp.PermissionDecision) []acp.PermissionDecision {
+	if len(actions) == 0 {
+		return []acp.PermissionDecision{acp.PermissionDeny}
+	}
+	return actions
+}
+
 func (b *Bridge) setupPermissionHandler() {
 	b.agentSvc.SetPermissionHandler(func(chatID int64, req acp.PermissionRequest) <-chan acp.PermissionResponse {
 		ch := make(chan acp.PermissionResponse, 1)
-		actions := req.AvailableActions
-		if len(actions) == 0 {
-			actions = []acp.PermissionDecision{acp.PermissionDeny}
-		}
+		actions := defaultPermissionActions(req.AvailableActions)
 		b.permMu.Lock()
 		b.pendingPerms[req.ID] = ch
 		b.pendingPermActions[req.ID] = actions
@@ -310,8 +289,6 @@ func (b *Bridge) setupPermissionHandler() {
 	})
 }
 
-// buildPermissionKeyboard builds inline keyboard from available actions (Python _permission_keyboard parity).
-// Labels: always->"Always", once->"This time", deny->"Deny". Callback: perm|reqID|action.
 func buildPermissionKeyboard(reqID string, actions []acp.PermissionDecision) *telego.InlineKeyboardMarkup {
 	var row []telego.InlineKeyboardButton
 	labels := map[acp.PermissionDecision]string{
@@ -334,10 +311,7 @@ func buildPermissionKeyboard(reqID string, actions []acp.PermissionDecision) *te
 }
 
 func (b *Bridge) sendPermissionRequest(chatID int64, req acp.PermissionRequest, text string) {
-	actions := req.AvailableActions
-	if len(actions) == 0 {
-		actions = []acp.PermissionDecision{acp.PermissionDeny}
-	}
+	actions := defaultPermissionActions(req.AvailableActions)
 	keyboard := buildPermissionKeyboard(req.ID, actions)
 	chunks := RenderMarkdown(text)
 	if len(chunks) == 0 {
@@ -385,30 +359,31 @@ func (b *Bridge) expirePermissionRequest(reqID string, ch chan acp.PermissionRes
 	}
 }
 
-// searchLocalWordBoundary matches Python's \bpattern\b for local search classification.
 var searchLocalWordBoundary = regexp.MustCompile(
 	`\b(workspace|repository|repo|project|ripgrep|rg|grep|glob)\b`,
 )
 
-// searchSourceLabel infers a display label for search activities from content.
-// Python parity: _search_source uses word boundaries; "report" must not match \brepo\b.
 func searchSourceLabel(title, text string) string {
 	content := strings.ToLower(title + "\n" + text)
-	if strings.Contains(content, "http://") || strings.Contains(content, "https://") ||
-		strings.Contains(content, "url:") || strings.Contains(content, "web search") ||
-		strings.Contains(content, "internet") {
+	if isWebSearch(content) {
 		return "🌐 Searching web"
 	}
-	if strings.Contains(content, "file://") {
-		return "🔎 Querying project"
-	}
-	if searchLocalWordBoundary.MatchString(content) {
+	if strings.Contains(content, "file://") || searchLocalWordBoundary.MatchString(content) {
 		return "🔎 Querying project"
 	}
 	return ""
 }
 
-// fencedCode wraps text in a code fence, escaping backticks if needed.
+func isWebSearch(content string) bool {
+	webHints := []string{"http://", "https://", "url:", "web search", "internet"}
+	for _, h := range webHints {
+		if strings.Contains(content, h) {
+			return true
+		}
+	}
+	return false
+}
+
 func fencedCode(text string) string {
 	maxRun := 0
 	run := 0
@@ -426,7 +401,6 @@ func fencedCode(text string) string {
 	return fence + "\n" + text + "\n" + fence
 }
 
-// formatRunCommands extracts "Run X" / "Run X, Run Y" into fenced code parts. Returns nil, false if not a Run command.
 func formatRunCommands(detail string) ([]string, bool) {
 	if !strings.HasPrefix(detail, "Run ") {
 		return nil, false
@@ -445,7 +419,6 @@ func formatRunCommands(detail string) ([]string, bool) {
 	return []string{fencedCode(cmd)}, true
 }
 
-// formatPermissionRequest formats a permission request for display, matching Python's style.
 func formatPermissionRequest(toolTitle string) string {
 	parts := []string{"**⚠️ Permission required**"}
 	title := strings.TrimSpace(toolTitle)
@@ -459,7 +432,6 @@ func formatPermissionRequest(toolTitle string) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// formatActivityPath normalizes a path for display, handling file:// URIs and workspace prefix.
 func formatActivityPath(raw, workspace string) string {
 	raw = strings.TrimSpace(raw)
 	if idx := strings.Index(raw, "file://"); idx >= 0 {
@@ -474,17 +446,14 @@ func formatActivityPath(raw, workspace string) string {
 	return raw
 }
 
-// formatActivityMessage formats an activity block for display in Telegram.
-// Uses standard Markdown (goldmark-compatible) since the caller renders via RenderMarkdown.
 func formatActivityMessage(block acp.ActivityBlock, workspace string) string {
-	var parts []string
-	parts = append(parts, "**"+block.Label+"**")
+	label := block.Label
 	if block.Kind == acp.ActivitySearch {
-		label := searchSourceLabel(block.Detail, block.Text)
-		if label != "" {
-			parts[0] = "**" + label + "**"
+		if searchLabel := searchSourceLabel(block.Detail, block.Text); searchLabel != "" {
+			label = searchLabel
 		}
 	}
+	parts := []string{"**" + label + "**"}
 
 	detail := block.Detail
 	switch block.Kind {
@@ -494,15 +463,9 @@ func formatActivityMessage(block acp.ActivityBlock, workspace string) string {
 			detail = ""
 		}
 	case acp.ActivityRead, acp.ActivityEdit:
-		// Python parity: _path_prefix_for_kind returns only for read/edit, not write
-		prefixes := map[acp.ActivityKind]string{
-			acp.ActivityRead: "Read ",
-			acp.ActivityEdit: "Edit ",
-		}
-		prefix := prefixes[block.Kind]
+		prefix := map[acp.ActivityKind]string{acp.ActivityRead: "Read ", acp.ActivityEdit: "Edit "}[block.Kind]
 		if strings.HasPrefix(detail, prefix) {
-			path := strings.TrimPrefix(detail, prefix)
-			path = formatActivityPath(path, workspace)
+			path := formatActivityPath(strings.TrimPrefix(detail, prefix), workspace)
 			parts = append(parts, "`"+path+"`")
 			detail = ""
 		}
@@ -511,23 +474,19 @@ func formatActivityMessage(block acp.ActivityBlock, workspace string) string {
 	if detail != "" && detail != block.Label {
 		parts = append(parts, detail)
 	}
-
 	if block.Text != "" && block.Text != block.Detail && block.Text != block.Label {
 		parts = append(parts, block.Text)
 	}
-
 	if block.Status == "failed" {
-		parts = append(parts, "_Failed_") // Python parity: italic, not bold
+		parts = append(parts, "_Failed_")
 	}
-
-	return strings.Join(parts, "\n\n") // Python parity: double newline between parts
+	return strings.Join(parts, "\n\n")
 }
 
 func (b *Bridge) sendMarkdownChunks(ctx context.Context, chatID int64, chunks []MessageChunk) {
 	for _, chunk := range chunks {
 		params := tu.Message(tu.ID(chatID), chunk.Text).WithParseMode(telego.ModeMarkdownV2)
 		if _, err := b.bot.SendMessage(ctx, params); err != nil {
-			// Fallback to plain text on parse error.
 			_, _ = b.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), chunk.Text))
 		}
 	}
@@ -548,7 +507,6 @@ func (b *Bridge) setupActivityHandler() {
 	})
 }
 
-// buildResumeKeyboard builds an inline keyboard for session selection.
 func buildResumeKeyboard(sessions []acp.SessionInfo) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
 	for i, s := range sessions {
@@ -573,7 +531,6 @@ func buildResumeKeyboard(sessions []acp.SessionInfo) *telego.InlineKeyboardMarku
 	return tu.InlineKeyboard(rows...)
 }
 
-// downloadFile fetches file bytes from Telegram by file ID.
 func (b *Bridge) downloadFile(ctx context.Context, fileID string) ([]byte, error) {
 	if b.bot == nil {
 		return nil, fmt.Errorf("bot not initialized")
@@ -608,8 +565,13 @@ func (b *Bridge) sendTextWithFormat(ctx context.Context, chatID int64, text stri
 	}
 }
 
-// sendAttachment sends a single file or image to the chat. defaultName is used when item.Name is empty.
-func (b *Bridge) sendAttachment(ctx context.Context, chatID int64, data []byte, name, defaultName string, isImage bool) {
+func (b *Bridge) sendAttachment(
+	ctx context.Context,
+	chatID int64,
+	data []byte,
+	name, defaultName string,
+	isImage bool,
+) {
 	if name == "" {
 		name = defaultName
 	}
@@ -626,7 +588,6 @@ func (b *Bridge) sendAttachment(ctx context.Context, chatID int64, data []byte, 
 	}
 }
 
-// sendReply sends the full agent reply (images, files, text) to the chat.
 func (b *Bridge) sendReply(ctx context.Context, chatID int64, reply *acp.AgentReply) {
 	if b.bot == nil || reply == nil {
 		return

@@ -22,21 +22,24 @@ func isPunctEnd(b byte) bool {
 	return false
 }
 
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+
+func isAlphanumeric(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
 func isNumericDotContinuation(chunks []string, next string) bool {
 	if len(chunks) == 0 || len(next) < 2 {
 		return false
 	}
 	prev := chunks[len(chunks)-1]
-	if len(prev) < 2 || prev[len(prev)-1] != '.' {
+	if len(prev) < 2 || prev[len(prev)-1] != '.' || !isDigit(prev[len(prev)-2]) {
 		return false
 	}
-	if prev[len(prev)-2] < '0' || prev[len(prev)-2] > '9' {
+	if !isDigit(next[0]) {
 		return false
 	}
-	if next[0] < '0' || next[0] > '9' {
-		return false
-	}
-	return (next[1] >= '0' && next[1] <= '9') || next[1] == '.'
+	return isDigit(next[1]) || next[1] == '.'
 }
 
 func appendTextChunk(chunks []string, text string) []string {
@@ -47,15 +50,12 @@ func appendTextChunk(chunks []string, text string) []string {
 	if len(prev) == 0 {
 		return append(chunks, text)
 	}
-	lastByte := prev[len(prev)-1]
-	firstByte := text[0]
+	lastByte, firstByte := prev[len(prev)-1], text[0]
 	if lastByte <= ' ' || firstByte <= ' ' {
 		return append(chunks, text)
 	}
-	if isPunctEnd(lastByte) &&
-		((firstByte >= 'a' && firstByte <= 'z') || (firstByte >= 'A' && firstByte <= 'Z') ||
-			(firstByte >= '0' && firstByte <= '9')) &&
-		!isNumericDotContinuation(chunks, text) {
+	needsSpace := isPunctEnd(lastByte) && isAlphanumeric(firstByte) && !isNumericDotContinuation(chunks, text)
+	if needsSpace {
 		return append(chunks, " ", text)
 	}
 	return append(chunks, text)
@@ -163,8 +163,6 @@ func (c *AcpClient) StartCapture() {
 }
 
 // FinishCapture returns the buffered reply.
-// Python parity: trailing pending non-tool text is appended to reply text directly;
-// no think block is emitted at prompt end (only when a tool block opens).
 func (c *AcpClient) FinishCapture() *AgentReply {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -180,8 +178,6 @@ func (c *AcpClient) FinishCapture() *AgentReply {
 	}
 }
 
-// appendPendingNonToolTextToReply appends pending non-tool text to textBuf without emitting a think block.
-// Used at FinishCapture to match Python: final_text = "".join(chunks + pending_text).
 func (c *AcpClient) appendPendingNonToolTextToReply() {
 	if len(c.pendingNonToolText) == 0 {
 		return
@@ -193,7 +189,7 @@ func (c *AcpClient) appendPendingNonToolTextToReply() {
 	}
 }
 
-// SessionUpdate implements acp.Client. Processes session updates and buffers output.
+// SessionUpdate implements acp.Client.
 func (c *AcpClient) SessionUpdate(ctx context.Context, params acpsdk.SessionNotification) error {
 	c.mu.Lock()
 	u := params.Update
@@ -229,28 +225,31 @@ func (c *AcpClient) appendContent(block acpsdk.ContentBlock, fromTool bool) {
 		data, err := base64.StdEncoding.DecodeString(block.Image.Data)
 		if err != nil {
 			slog.Warn("failed to decode image base64 data", "error", err)
-		} else {
-			c.images = append(c.images, ImageData{
-				MIMEType: block.Image.MimeType,
-				Data:     data,
-				Name:     "",
-			})
+			return
 		}
+		c.images = append(c.images, ImageData{
+			MIMEType: block.Image.MimeType,
+			Data:     data,
+			Name:     "",
+		})
 	case block.Resource != nil:
 		c.appendResource(block.Resource.Resource)
 	}
+}
+
+func ptrStr(s *string, def string) string {
+	if s != nil {
+		return *s
+	}
+	return def
 }
 
 func (c *AcpClient) appendResource(res acpsdk.EmbeddedResourceResource) {
 	switch {
 	case res.TextResourceContents != nil:
 		t := res.TextResourceContents
-		mime := "text/plain"
-		if t.MimeType != nil {
-			mime = *t.MimeType
-		}
 		c.files = append(c.files, FileData{
-			MIMEType: mime,
+			MIMEType: ptrStr(t.MimeType, "text/plain"),
 			Data:     []byte(t.Text),
 			Name:     t.Uri,
 		})
@@ -259,29 +258,25 @@ func (c *AcpClient) appendResource(res acpsdk.EmbeddedResourceResource) {
 		data, err := base64.StdEncoding.DecodeString(b.Blob)
 		if err != nil {
 			slog.Warn("failed to decode blob base64 data", "uri", b.Uri, "error", err)
-		} else {
-			mime := "application/octet-stream"
-			if b.MimeType != nil {
-				mime = *b.MimeType
-			}
-			c.files = append(c.files, FileData{
-				MIMEType: mime,
-				Data:     data,
-				Name:     b.Uri,
-			})
+			return
 		}
+		c.files = append(c.files, FileData{
+			MIMEType: ptrStr(b.MimeType, "application/octet-stream"),
+			Data:     data,
+			Name:     b.Uri,
+		})
 	}
 }
 
 func (c *AcpClient) appendText(text string, fromTool bool) {
-	if len(text) == 0 {
+	if text == "" {
 		return
 	}
 	if c.activeBlock != nil {
 		c.activeBlockChunks = appendTextChunk(c.activeBlockChunks, text)
-	} else {
-		c.pendingNonToolText = appendTextChunk(c.pendingNonToolText, text)
+		return
 	}
+	c.pendingNonToolText = appendTextChunk(c.pendingNonToolText, text)
 }
 
 func (c *AcpClient) flushPendingNonToolText() *ActivityBlock {
@@ -323,7 +318,6 @@ func (c *AcpClient) closeAndCollectActiveBlock(status string, isPromptEnd bool) 
 	c.activeBlock.EndAt = time.Now()
 	c.activeBlock.Status = status
 	blockText := strings.TrimSpace(strings.Join(c.activeBlockChunks, ""))
-	// Trailing non-think block: move text to reply instead of block.
 	if isPromptEnd && c.activeBlock.Kind != ActivityThink && blockText != "" {
 		c.textBuf.WriteString(blockText)
 		blockText = ""
@@ -363,6 +357,14 @@ func (c *AcpClient) openToolBlock(tc *acpsdk.SessionUpdateToolCall) []*ActivityB
 	return emitted
 }
 
+func isToolCallTerminal(status *acpsdk.ToolCallStatus) bool {
+	if status == nil {
+		return false
+	}
+	s := *status
+	return s == acpsdk.ToolCallStatusCompleted || s == acpsdk.ToolCallStatusFailed
+}
+
 func (c *AcpClient) updateToolBlock(tu *acpsdk.SessionToolCallUpdate) []*ActivityBlock {
 	var emitted []*ActivityBlock
 	for _, cont := range tu.Content {
@@ -370,17 +372,15 @@ func (c *AcpClient) updateToolBlock(tu *acpsdk.SessionToolCallUpdate) []*Activit
 			c.appendContent(cont.Content.Content, true)
 		}
 	}
-	if tu.Status != nil && (*tu.Status == acpsdk.ToolCallStatusCompleted || *tu.Status == acpsdk.ToolCallStatusFailed) {
-		if c.activeBlock != nil && c.activeToolCallID == tu.ToolCallId {
-			status := "completed"
-			if *tu.Status == acpsdk.ToolCallStatusFailed {
-				status = "failed"
-			}
-			closed := c.closeAndCollectActiveBlock(status, false)
-			if shouldEmitClosedActivity(closed) {
-				emitted = append(emitted, closed)
-			}
-		}
+	if !isToolCallTerminal(tu.Status) || c.activeBlock == nil || c.activeToolCallID != tu.ToolCallId {
+		return emitted
+	}
+	status := "completed"
+	if *tu.Status == acpsdk.ToolCallStatusFailed {
+		status = "failed"
+	}
+	if closed := c.closeAndCollectActiveBlock(status, false); shouldEmitClosedActivity(closed) {
+		emitted = append(emitted, closed)
 	}
 	return emitted
 }
@@ -404,8 +404,6 @@ func toolKindToActivityKind(k acpsdk.ToolKind, title string) ActivityKind {
 	}
 }
 
-// availableActionsFromOptions computes available actions from SDK options (Python _available_actions parity).
-// allow_always -> always; allow_once -> once; always append deny.
 func availableActionsFromOptions(options []acpsdk.PermissionOption) []PermissionDecision {
 	hasAlways := false
 	hasOnce := false
@@ -428,24 +426,20 @@ func availableActionsFromOptions(options []acpsdk.PermissionOption) []Permission
 	return actions
 }
 
-// RequestPermission implements acp.Client. Delegates to onPermission and maps SDK types.
-func (c *AcpClient) RequestPermission(ctx context.Context, req acpsdk.RequestPermissionRequest) (acpsdk.RequestPermissionResponse, error) {
-	tool := ""
-	desc := ""
-	if req.ToolCall.Title != nil {
-		tool = *req.ToolCall.Title
-		desc = *req.ToolCall.Title
-	}
+// RequestPermission implements acp.Client.
+func (c *AcpClient) RequestPermission(
+	ctx context.Context,
+	req acpsdk.RequestPermissionRequest,
+) (acpsdk.RequestPermissionResponse, error) {
+	tool := ptrStr(req.ToolCall.Title, "")
 	input := make(map[string]any)
-	if req.ToolCall.RawInput != nil {
-		if m, ok := req.ToolCall.RawInput.(map[string]any); ok {
-			input = m
-		}
+	if m, ok := req.ToolCall.RawInput.(map[string]any); ok {
+		input = m
 	}
 	ourReq := PermissionRequest{
 		ID:               string(req.ToolCall.ToolCallId),
 		Tool:             tool,
-		Description:      desc,
+		Description:      tool,
 		Input:            input,
 		AvailableActions: availableActionsFromOptions(req.Options),
 	}
@@ -471,7 +465,10 @@ func (c *AcpClient) RequestPermission(ctx context.Context, req acpsdk.RequestPer
 	}
 }
 
-func selectOption(options []acpsdk.PermissionOption, kind acpsdk.PermissionOptionKind) *acpsdk.RequestPermissionResponse {
+func selectOption(
+	options []acpsdk.PermissionOption,
+	kind acpsdk.PermissionOptionKind,
+) *acpsdk.RequestPermissionResponse {
 	for _, opt := range options {
 		if opt.Kind == kind {
 			return &acpsdk.RequestPermissionResponse{
@@ -501,33 +498,42 @@ func denyResponse(options []acpsdk.PermissionOption) acpsdk.RequestPermissionRes
 	return acpsdk.RequestPermissionResponse{}
 }
 
-func permissionResponseToSDK(resp PermissionResponse, options []acpsdk.PermissionOption) acpsdk.RequestPermissionResponse {
+func allowResponse(options []acpsdk.PermissionOption, preferAlways bool) acpsdk.RequestPermissionResponse {
+	kinds := []acpsdk.PermissionOptionKind{
+		acpsdk.PermissionOptionKindAllowOnce,
+	}
+	if preferAlways {
+		kinds = append([]acpsdk.PermissionOptionKind{acpsdk.PermissionOptionKindAllowAlways}, kinds...)
+	}
+	for _, k := range kinds {
+		if r := selectOption(options, k); r != nil {
+			return *r
+		}
+	}
+	if len(options) > 0 {
+		return acpsdk.RequestPermissionResponse{
+			Outcome: acpsdk.RequestPermissionOutcome{
+				Selected: &acpsdk.RequestPermissionOutcomeSelected{OptionId: options[0].OptionId},
+			},
+		}
+	}
+	return acpsdk.RequestPermissionResponse{}
+}
+
+func permissionResponseToSDK(
+	resp PermissionResponse,
+	options []acpsdk.PermissionOption,
+) acpsdk.RequestPermissionResponse {
 	switch resp.Decision {
 	case PermissionDeny:
 		return denyResponse(options)
-
 	case PermissionThisTime:
 		if r := selectOption(options, acpsdk.PermissionOptionKindAllowOnce); r != nil {
 			return *r
 		}
 		return denyResponse(options)
-
 	case PermissionAlways:
-		if r := selectOption(options, acpsdk.PermissionOptionKindAllowAlways); r != nil {
-			return *r
-		}
-		if r := selectOption(options, acpsdk.PermissionOptionKindAllowOnce); r != nil {
-			return *r
-		}
-		if len(options) > 0 {
-			return acpsdk.RequestPermissionResponse{
-				Outcome: acpsdk.RequestPermissionOutcome{
-					Selected: &acpsdk.RequestPermissionOutcomeSelected{OptionId: options[0].OptionId},
-				},
-			}
-		}
-		return acpsdk.RequestPermissionResponse{}
-
+		return allowResponse(options, true)
 	default:
 		return denyResponse(options)
 	}
@@ -536,37 +542,55 @@ func permissionResponseToSDK(resp PermissionResponse, options []acpsdk.Permissio
 // ErrNotSupported is returned by AcpClient methods that are not implemented.
 var ErrNotSupported = errors.New("not supported by this client")
 
-// ReadTextFile implements acp.Client. Returns ErrNotSupported.
+// ReadTextFile implements acp.Client.
 func (c *AcpClient) ReadTextFile(_ context.Context, _ acpsdk.ReadTextFileRequest) (acpsdk.ReadTextFileResponse, error) {
 	return acpsdk.ReadTextFileResponse{}, ErrNotSupported
 }
 
-// WriteTextFile implements acp.Client. Returns ErrNotSupported.
-func (c *AcpClient) WriteTextFile(_ context.Context, _ acpsdk.WriteTextFileRequest) (acpsdk.WriteTextFileResponse, error) {
+// WriteTextFile implements acp.Client.
+func (c *AcpClient) WriteTextFile(
+	_ context.Context,
+	_ acpsdk.WriteTextFileRequest,
+) (acpsdk.WriteTextFileResponse, error) {
 	return acpsdk.WriteTextFileResponse{}, ErrNotSupported
 }
 
-// CreateTerminal implements acp.Client. Spawns a subprocess and returns its terminal ID.
-func (c *AcpClient) CreateTerminal(_ context.Context, params acpsdk.CreateTerminalRequest) (acpsdk.CreateTerminalResponse, error) {
+// CreateTerminal implements acp.Client.
+func (c *AcpClient) CreateTerminal(
+	_ context.Context,
+	params acpsdk.CreateTerminalRequest,
+) (acpsdk.CreateTerminalResponse, error) {
 	return c.terminals.Create(params)
 }
 
-// KillTerminalCommand implements acp.Client. Sends SIGKILL to the terminal process.
-func (c *AcpClient) KillTerminalCommand(_ context.Context, params acpsdk.KillTerminalCommandRequest) (acpsdk.KillTerminalCommandResponse, error) {
+// KillTerminalCommand implements acp.Client.
+func (c *AcpClient) KillTerminalCommand(
+	_ context.Context,
+	params acpsdk.KillTerminalCommandRequest,
+) (acpsdk.KillTerminalCommandResponse, error) {
 	return c.terminals.Kill(params)
 }
 
-// TerminalOutput implements acp.Client. Returns current output and exit status.
-func (c *AcpClient) TerminalOutput(_ context.Context, params acpsdk.TerminalOutputRequest) (acpsdk.TerminalOutputResponse, error) {
+// TerminalOutput implements acp.Client.
+func (c *AcpClient) TerminalOutput(
+	_ context.Context,
+	params acpsdk.TerminalOutputRequest,
+) (acpsdk.TerminalOutputResponse, error) {
 	return c.terminals.Output(params)
 }
 
-// ReleaseTerminal implements acp.Client. Kills the process and removes the terminal record.
-func (c *AcpClient) ReleaseTerminal(_ context.Context, params acpsdk.ReleaseTerminalRequest) (acpsdk.ReleaseTerminalResponse, error) {
+// ReleaseTerminal implements acp.Client.
+func (c *AcpClient) ReleaseTerminal(
+	_ context.Context,
+	params acpsdk.ReleaseTerminalRequest,
+) (acpsdk.ReleaseTerminalResponse, error) {
 	return c.terminals.Release(params)
 }
 
-// WaitForTerminalExit implements acp.Client. Blocks until the terminal process exits.
-func (c *AcpClient) WaitForTerminalExit(ctx context.Context, params acpsdk.WaitForTerminalExitRequest) (acpsdk.WaitForTerminalExitResponse, error) {
+// WaitForTerminalExit implements acp.Client.
+func (c *AcpClient) WaitForTerminalExit(
+	ctx context.Context,
+	params acpsdk.WaitForTerminalExitRequest,
+) (acpsdk.WaitForTerminalExitResponse, error) {
 	return c.terminals.WaitForExit(ctx, params)
 }

@@ -37,28 +37,18 @@ func run() error {
 	echoMode := flag.Bool("echo", false, "Use EchoAgentService instead of real ACP agent (for testing)")
 	flag.Parse()
 
-	// Load config (fallback to env-only only when file is not found)
-	cfg, err := config.Load(*configPath)
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		cfg, err = config.Load("")
-		if err != nil {
-			return err
-		}
+		return err
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 
-	// Logger
-	var handler slog.Handler
 	opts := &slog.HandlerOptions{Level: parseLogLevel(cfg.Logging.Level)}
+	handler := slog.Handler(slog.NewTextHandler(os.Stderr, opts))
 	if cfg.Logging.Format == "json" {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(handler))
 
@@ -68,7 +58,6 @@ func run() error {
 	}
 	mcpChannelPath := filepath.Join(filepath.Dir(exe), "mcp-channel")
 
-	// ACP service config
 	agentCmd := strings.Fields(cfg.Agent.Command)
 	svcCfg := acp.ServiceConfig{
 		AgentCommand:   agentCmd,
@@ -95,9 +84,8 @@ func run() error {
 		agentSvc = acp.NewAgentService(svcCfg)
 	}
 
-	// Telegram bot
 	var botOpts []telego.BotOption
-	if cfg.Telegram.Proxy != "" { // 可选的代理设置
+	if cfg.Telegram.Proxy != "" {
 		httpClient, err := buildProxyHTTPClient(cfg.Telegram.Proxy)
 		if err != nil {
 			return fmt.Errorf("configuring proxy: %w", err)
@@ -111,7 +99,6 @@ func run() error {
 		return fmt.Errorf("creating bot: %w", err)
 	}
 
-	// Bridge
 	botCfg := bot.Config{
 		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
 		AllowedUsernames: cfg.Telegram.AllowedUsernames,
@@ -119,7 +106,6 @@ func run() error {
 	}
 	bridge := bot.NewBridge(telegoBot, agentSvc, botCfg)
 
-	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	defer agentSvc.Shutdown()
@@ -144,16 +130,25 @@ func run() error {
 	return g.Wait()
 }
 
-// buildProxyHTTPClient builds an HTTP client from a proxy URL, supporting socks5:// and http:// schemes.
+func loadConfig(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if err == nil {
+		return cfg, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return config.Load("")
+}
+
 func buildProxyHTTPClient(proxyAddr string) (*http.Client, error) {
 	proxyURL, err := url.Parse(proxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("parsing proxy URL %q: %w", proxyAddr, err)
 	}
 
-	var transport *http.Transport
-	switch proxyURL.Scheme {
-	case "socks5", "socks5h":
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
 		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
 		if err != nil {
 			return nil, fmt.Errorf("creating SOCKS5 dialer: %w", err)
@@ -163,15 +158,10 @@ func buildProxyHTTPClient(proxyAddr string) (*http.Client, error) {
 				return dialer.Dial(network, addr)
 			},
 		}
-	default:
-		transport = &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-		}
 	}
 	return &http.Client{Transport: transport}, nil
 }
 
-// telegoLogger bridges telego's Logger interface to slog, suppressing shutdown noise.
 type telegoLogger struct{}
 
 func (telegoLogger) Debugf(format string, args ...any) {
@@ -180,25 +170,29 @@ func (telegoLogger) Debugf(format string, args ...any) {
 
 func (telegoLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	// Suppress expected errors during graceful shutdown (context cancellation / interrupt signal).
-	if strings.Contains(msg, "interrupt signal") ||
-		strings.Contains(msg, "context canceled") ||
-		strings.Contains(msg, "context deadline exceeded") {
+	if isShutdownNoise(msg) {
 		slog.Debug("telego shutdown", "msg", msg)
 		return
 	}
 	slog.Error(msg)
 }
 
+func isShutdownNoise(msg string) bool {
+	return strings.Contains(msg, "interrupt signal") ||
+		strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "context deadline exceeded")
+}
+
+var logLevels = map[string]slog.Level{
+	"debug":   slog.LevelDebug,
+	"warn":    slog.LevelWarn,
+	"warning": slog.LevelWarn,
+	"error":   slog.LevelError,
+}
+
 func parseLogLevel(level string) slog.Level {
-	switch strings.ToLower(level) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
+	if l, ok := logLevels[strings.ToLower(level)]; ok {
+		return l
 	}
+	return slog.LevelInfo
 }

@@ -73,7 +73,9 @@ func (m *mockAgentService) SetActivityHandler(_ func(chatID int64, block acp.Act
 	m.onActivityCalled = true
 }
 
-func (m *mockAgentService) SetPermissionHandler(_ func(chatID int64, req acp.PermissionRequest) <-chan acp.PermissionResponse) {
+func (m *mockAgentService) SetPermissionHandler(
+	_ func(chatID int64, req acp.PermissionRequest) <-chan acp.PermissionResponse,
+) {
 	m.onPermissionCalled = true
 }
 
@@ -96,7 +98,11 @@ type blockingMockAgentService struct {
 	promptMu      sync.Mutex
 }
 
-func (m *blockingMockAgentService) Prompt(ctx context.Context, chatID int64, input acp.PromptInput) (*acp.AgentReply, error) {
+func (m *blockingMockAgentService) Prompt(
+	ctx context.Context,
+	chatID int64,
+	input acp.PromptInput,
+) (*acp.AgentReply, error) {
 	m.promptMu.Lock()
 	m.promptCount++
 	m.promptMu.Unlock()
@@ -295,7 +301,11 @@ func TestBuildResumeKeyboard(t *testing.T) {
 	sessions := []acp.SessionInfo{
 		{SessionID: "s1", Workspace: ".", Title: "My Session"},
 		{SessionID: "session-two", Workspace: "ws"},
-		{SessionID: strings.Repeat("x", 50), Workspace: ".", Title: "Long title that should be truncated properly here"},
+		{
+			SessionID: strings.Repeat("x", 50),
+			Workspace: ".",
+			Title:     "Long title that should be truncated properly here",
+		},
 	}
 	kb := buildResumeKeyboard(sessions)
 	require.NotNil(t, kb)

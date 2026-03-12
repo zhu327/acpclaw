@@ -20,7 +20,7 @@ import (
 	"github.com/zhu327/acpclaw/internal/util"
 )
 
-// ServiceConfig holds configuration for the ACP agent service.
+// ServiceConfig configures the ACP agent service.
 type ServiceConfig struct {
 	AgentCommand   []string      // e.g. ["claude", "--no-color"]
 	Workspace      string        // default workspace
@@ -35,7 +35,6 @@ type ServiceConfig struct {
 	AgentEnv []string
 }
 
-// liveSession holds a running agent process and its ACP connection.
 type liveSession struct {
 	sessionID           string
 	workspace           string
@@ -48,8 +47,8 @@ type liveSession struct {
 	supportsSessionList bool
 }
 
-// AcpAgentService manages ACP agent subprocesses per chat.
-// 每个 chatID 维护一个长期存活的 ACP 进程，session 操作在同一连接上完成。
+// AcpAgentService manages ACP agent subprocesses per chat. Each chatID maintains a long-lived
+// ACP process; session operations run on the same connection.
 type AcpAgentService struct {
 	cfg            ServiceConfig
 	ctx            context.Context
@@ -132,8 +131,6 @@ func (s *AcpAgentService) promptLockFor(chatID int64) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// sessionLockFor returns the per-chat mutex that guards session lifecycle
-// (NewSession, LoadSession, Reconnect). See promptLockFor for the separate prompt lock.
 func (s *AcpAgentService) sessionLockFor(chatID int64) *sync.Mutex {
 	v, _ := s.sessionLocks.LoadOrStore(chatID, &sync.Mutex{})
 	return v.(*sync.Mutex)
@@ -154,7 +151,6 @@ func stopLiveSession(live *liveSession) {
 	if live == nil {
 		return
 	}
-	// Release all terminal subprocesses spawned during this session.
 	if live.client != nil {
 		live.client.terminals.ReleaseSession(live.sessionID)
 	}
@@ -227,15 +223,10 @@ func (s *AcpAgentService) resolveSessionWorkspace(currentWorkspace, requestedWor
 }
 
 func shouldLogEventOutput(eventOutput string) bool {
-	switch strings.ToLower(strings.TrimSpace(eventOutput)) {
-	case "", "stdout":
-		return true
-	default:
-		return false
-	}
+	s := strings.ToLower(strings.TrimSpace(eventOutput))
+	return s == "" || s == "stdout"
 }
 
-// spawnResult holds the output of spawnAndInitialize for creating a liveSession.
 type spawnResult struct {
 	cmd                 *exec.Cmd
 	conn                *acpsdk.ClientSideConnection
@@ -246,8 +237,7 @@ type spawnResult struct {
 	workspace           string // prepared workspace path for Cwd
 }
 
-// extendedInitResponse mirrors acpsdk.InitializeResponse but adds sessionCapabilities
-// which is present in the ACP protocol spec but not yet in the Go SDK (v0.6.3).
+// extendedInitResponse adds sessionCapabilities (in ACP spec, not yet in Go SDK v0.6.3).
 type extendedInitResponse struct {
 	Meta              any                       `json:"_meta,omitempty"`
 	AgentCapabilities extendedAgentCapabilities `json:"agentCapabilities,omitempty"`
@@ -256,7 +246,6 @@ type extendedInitResponse struct {
 	ProtocolVersion   acpsdk.ProtocolVersion    `json:"protocolVersion"`
 }
 
-// extendedAgentCapabilities extends acpsdk.AgentCapabilities with sessionCapabilities.
 type extendedAgentCapabilities struct {
 	Meta                any                       `json:"_meta,omitempty"`
 	LoadSession         bool                      `json:"loadSession,omitempty"`
@@ -265,13 +254,10 @@ type extendedAgentCapabilities struct {
 	SessionCapabilities *sessionCapabilities      `json:"sessionCapabilities,omitempty"`
 }
 
-// sessionCapabilities describes session-related capabilities advertised by the agent.
 type sessionCapabilities struct {
 	List *struct{} `json:"list,omitempty"`
 }
 
-// toSDKResponse converts an extendedInitResponse back to acpsdk.InitializeResponse,
-// dropping the extra sessionCapabilities field.
 func (r *extendedInitResponse) toSDKResponse() acpsdk.InitializeResponse {
 	return acpsdk.InitializeResponse{
 		Meta: r.Meta,
@@ -287,7 +273,6 @@ func (r *extendedInitResponse) toSDKResponse() acpsdk.InitializeResponse {
 	}
 }
 
-// supportsSessionListCap checks whether the agent advertised session/list support.
 func (r *extendedInitResponse) supportsSessionListCap() bool {
 	return r.AgentCapabilities.SessionCapabilities != nil &&
 		r.AgentCapabilities.SessionCapabilities.List != nil
@@ -310,9 +295,6 @@ func extractRawConn(csc *acpsdk.ClientSideConnection) *acpsdk.Connection {
 	return *(**acpsdk.Connection)(unsafe.Pointer(csc))
 }
 
-// buildAgentEnv constructs the environment for agent subprocesses.
-// It uses AgentEnv as an allowlist of names to pass from the current process environment.
-// When AgentEnv is nil, defaultAgentEnvAllowlist is used to avoid leaking secrets.
 func (s *AcpAgentService) buildAgentEnv() []string {
 	allowlist := s.cfg.AgentEnv
 	if allowlist == nil {
@@ -333,15 +315,8 @@ func (s *AcpAgentService) buildAgentEnv() []string {
 	return env
 }
 
-// spawnAndInitialize starts an agent subprocess, sets up ACP connection, and
-// runs the Initialize handshake. The caller must kill cmd on subsequent errors.
-// workspace sets the subprocess working directory so the agent starts in the
-// correct project root; the same path is also passed via NewSessionRequest.Cwd.
 func (s *AcpAgentService) spawnAndInitialize(ctx context.Context, workspace string) (*spawnResult, error) {
 	cmd := exec.CommandContext(s.ctx, s.cfg.AgentCommand[0], s.cfg.AgentCommand[1:]...)
-	// Use an explicit env allowlist to avoid leaking secrets (e.g. TELEGRAM_BOT_TOKEN)
-	// into /proc/[pid]/environ of agent subprocesses. Configure AgentEnv in ServiceConfig
-	// to pass additional variables required by the agent.
 	cmd.Env = s.buildAgentEnv()
 	if workspace != "" {
 		cmd.Dir = workspace
@@ -366,12 +341,17 @@ func (s *AcpAgentService) spawnAndInitialize(ctx context.Context, workspace stri
 	defer cancel()
 
 	rawConn := extractRawConn(conn)
-	extResp, err := acpsdk.SendRequest[extendedInitResponse](rawConn, initCtx, acpsdk.AgentMethodInitialize, acpsdk.InitializeRequest{
-		ProtocolVersion: acpsdk.ProtocolVersionNumber,
-		ClientCapabilities: acpsdk.ClientCapabilities{
-			Terminal: true,
+	extResp, err := acpsdk.SendRequest[extendedInitResponse](
+		rawConn,
+		initCtx,
+		acpsdk.AgentMethodInitialize,
+		acpsdk.InitializeRequest{
+			ProtocolVersion: acpsdk.ProtocolVersionNumber,
+			ClientCapabilities: acpsdk.ClientCapabilities{
+				Terminal: true,
+			},
 		},
-	})
+	)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return nil, err
@@ -388,19 +368,16 @@ func (s *AcpAgentService) spawnAndInitialize(ctx context.Context, workspace stri
 	}, nil
 }
 
-// listSessionsRequest is the request body for session/list (ACP protocol, not yet in Go SDK v0.6.3).
 type listSessionsRequest struct {
 	Cursor *string `json:"cursor,omitempty"`
 	Cwd    *string `json:"cwd,omitempty"`
 }
 
-// listSessionsResponse is the response body for session/list.
 type listSessionsResponse struct {
 	Sessions   []sessionListItem `json:"sessions"`
 	NextCursor *string           `json:"nextCursor,omitempty"`
 }
 
-// sessionListItem is a single entry in the session/list response.
 type sessionListItem struct {
 	SessionID string  `json:"sessionId"`
 	Cwd       string  `json:"cwd"`
@@ -421,8 +398,12 @@ func sessionItemToSessionInfo(item sessionListItem) SessionInfo {
 	return info
 }
 
-// callSessionList calls session/list on the given connection with optional cwd filter.
-func callSessionList(ctx context.Context, conn *acpsdk.Connection, cwd string, timeout time.Duration) ([]sessionListItem, error) {
+func callSessionList(
+	ctx context.Context,
+	conn *acpsdk.Connection,
+	cwd string,
+	timeout time.Duration,
+) ([]sessionListItem, error) {
 	var sessions []sessionListItem
 	var cursor *string
 	for range 5 { // max 5 pages
@@ -447,13 +428,18 @@ func callSessionList(ctx context.Context, conn *acpsdk.Connection, cwd string, t
 
 const maxSessionHistory = 20
 
-// appendCappedSessionHistory appends a session to the history list, capping at maxSessionHistory.
-func appendCappedSessionHistory(history []SessionInfo, info SessionInfo) []SessionInfo {
-	history = append(history, info)
-	if len(history) > maxSessionHistory {
-		history = history[len(history)-maxSessionHistory:]
+func upsertCappedSessionHistory(history []SessionInfo, info SessionInfo) []SessionInfo {
+	filtered := make([]SessionInfo, 0, len(history)+1)
+	for _, h := range history {
+		if h.SessionID != info.SessionID {
+			filtered = append(filtered, h)
+		}
 	}
-	return history
+	filtered = append(filtered, info)
+	if len(filtered) > maxSessionHistory {
+		filtered = filtered[len(filtered)-maxSessionHistory:]
+	}
+	return filtered
 }
 
 func (s *AcpAgentService) attachSession(chatID int64, live *liveSession) {
@@ -462,9 +448,25 @@ func (s *AcpAgentService) attachSession(chatID int64, live *liveSession) {
 	s.mu.Unlock()
 }
 
-// createNewSession calls NewSession on the connection and updates live session fields.
-// Caller holds sessionLock.
-func (s *AcpAgentService) createNewSession(ctx context.Context, chatID int64, live *liveSession, targetWorkspace string) error {
+func (s *AcpAgentService) removeSessionFromHistory(chatID int64, sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	history := s.sessionHistory[chatID]
+	filtered := make([]SessionInfo, 0, len(history))
+	for _, h := range history {
+		if h.SessionID != sessionID {
+			filtered = append(filtered, h)
+		}
+	}
+	s.sessionHistory[chatID] = filtered
+}
+
+func (s *AcpAgentService) createNewSession(
+	ctx context.Context,
+	chatID int64,
+	live *liveSession,
+	targetWorkspace string,
+) error {
 	sessCtx, cancel := context.WithTimeout(ctx, s.cfg.ConnectTimeout)
 	defer cancel()
 
@@ -483,7 +485,7 @@ func (s *AcpAgentService) createNewSession(ctx context.Context, chatID int64, li
 	s.mu.Lock()
 	live.sessionID = string(newSess.SessionId)
 	live.workspace = targetWorkspace
-	s.sessionHistory[chatID] = appendCappedSessionHistory(s.sessionHistory[chatID], SessionInfo{
+	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], SessionInfo{
 		SessionID: live.sessionID,
 		Workspace: targetWorkspace,
 		UpdatedAt: time.Now(),
@@ -492,9 +494,7 @@ func (s *AcpAgentService) createNewSession(ctx context.Context, chatID int64, li
 	return nil
 }
 
-// ensureProcess 确保 chatID 有一个活跃的 ACP 进程。
-// 如果已有进程则直接返回 liveSession；否则 spawn 新进程 + Initialize。
-// Caller must hold sessionLock.
+// ensureProcess ensures an active ACP process for chatID. Caller must hold sessionLock.
 func (s *AcpAgentService) ensureProcess(ctx context.Context, chatID int64, workspace string) (*liveSession, error) {
 	s.mu.RLock()
 	live := s.liveByChat[chatID]
@@ -532,9 +532,7 @@ func (s *AcpAgentService) ensureProcess(ctx context.Context, chatID int64, works
 	return live, nil
 }
 
-// NewSession 在现有 ACP 进程上创建新 session，无进程时先 spawn。
-// 当请求的 workspace 与当前进程的 workspace 不同时，会杀掉旧进程并重新 spawn，
-// 因为 ACP agent 使用进程的 cwd 而非 NewSession.Cwd 来决定工作目录。
+// NewSession creates a new session; respawns the process when workspace changes.
 func (s *AcpAgentService) NewSession(ctx context.Context, chatID int64, workspace string) error {
 	if len(s.cfg.AgentCommand) == 0 {
 		return ErrAgentCommandNotConfigured
@@ -552,8 +550,6 @@ func (s *AcpAgentService) NewSession(ctx context.Context, chatID int64, workspac
 		return err
 	}
 
-	// ACP agents use process cwd (cmd.Dir) for filesystem operations, not NewSession.Cwd.
-	// When workspace changes, respawn the process so cmd.Dir matches the target workspace.
 	if targetWorkspace != live.workspace {
 		slog.Info("workspace changed, respawning ACP process",
 			"chat_id", chatID,
@@ -573,7 +569,7 @@ func (s *AcpAgentService) NewSession(ctx context.Context, chatID int64, workspac
 	return s.createNewSession(ctx, chatID, live, targetWorkspace)
 }
 
-// LoadSession 在现有 ACP 进程上加载已有 session。
+// LoadSession loads an existing session on the ACP process.
 func (s *AcpAgentService) LoadSession(ctx context.Context, chatID int64, sessionID, workspace string) error {
 	if len(s.cfg.AgentCommand) == 0 {
 		return ErrAgentCommandNotConfigured
@@ -605,13 +601,17 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID int64, session
 		McpServers: s.cfg.MCPServers,
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), sessionNotFoundPhrase) {
+			s.removeSessionFromHistory(chatID, sessionID)
+			return fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
+		}
 		return err
 	}
 
 	s.mu.Lock()
 	live.sessionID = sessionID
 	live.workspace = targetWorkspace
-	s.sessionHistory[chatID] = appendCappedSessionHistory(s.sessionHistory[chatID], SessionInfo{
+	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], SessionInfo{
 		SessionID: sessionID,
 		Workspace: targetWorkspace,
 		UpdatedAt: time.Now(),
@@ -621,8 +621,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID int64, session
 	return nil
 }
 
-// ListSessions 在现有 ACP 进程上调 session/list。
-// 如果 agent 支持 session/list 则使用远程结果，否则 fallback 到本地 sessionHistory。
+// ListSessions returns sessions from the agent or local history fallback.
 func (s *AcpAgentService) ListSessions(ctx context.Context, chatID int64) ([]SessionInfo, error) {
 	s.mu.RLock()
 	live := s.liveByChat[chatID]
@@ -655,7 +654,7 @@ func (s *AcpAgentService) ListSessions(ctx context.Context, chatID int64) ([]Ses
 	return result, nil
 }
 
-// Reconnect 杀掉 ACP 进程并重新 spawn + new_session。
+// Reconnect kills the ACP process and respawns with a new session.
 func (s *AcpAgentService) Reconnect(ctx context.Context, chatID int64, workspace string) error {
 	if len(s.cfg.AgentCommand) == 0 {
 		return ErrAgentCommandNotConfigured
@@ -694,6 +693,13 @@ const acpStdioLimitErrPhrase = "chunk is longer than limit"
 // ErrLoadSessionNotSupported is returned when the agent does not support load_session.
 var ErrLoadSessionNotSupported = errors.New("agent does not support load_session")
 
+// ErrSessionNotFound is returned when the agent cannot find the requested session.
+var ErrSessionNotFound = errors.New("session not found")
+
+// sessionNotFoundPhrase is the substring used to detect "not found" errors from the agent.
+// Fragile: relies on agent error message format. Replace with typed error once SDK exposes one.
+const sessionNotFoundPhrase = "not found"
+
 // ErrNoActiveProcess is returned when there is no active ACP process for the chat.
 var ErrNoActiveProcess = errors.New("no active ACP process")
 
@@ -719,10 +725,6 @@ func fileURIWarning(format string, args ...any) fileURIResult {
 	return fileURIResult{warning: "Attachment warning: " + fmt.Sprintf(format, args...) + "\n"}
 }
 
-// resolveFileURI resolves a file:// URI in f to actual file content.
-// Returns passThrough=true for non-local URIs that should be forwarded unchanged.
-// Returns a non-empty warning when the file cannot be read (caller appends to reply text).
-// Returns data+name on success.
 func resolveFileURI(f FileData, workspaceAbs string) fileURIResult {
 	fileURI := extractFileURI(f)
 	if fileURI == "" {
@@ -764,7 +766,7 @@ func resolveFileURI(f FileData, workspaceAbs string) fileURIResult {
 	return fileURIResult{data: data, name: filepath.Base(resolved)}
 }
 
-// ResolveFileURIResources resolves file:// URIs in reply files to actual file content.
+// ResolveFileURIResources resolves file:// URIs in reply files to actual content.
 func (s *AcpAgentService) ResolveFileURIResources(reply *AgentReply, workspace string) *AgentReply {
 	if reply == nil {
 		return nil
@@ -848,20 +850,19 @@ func (s *AcpAgentService) Prompt(ctx context.Context, chatID int64, input Prompt
 				)
 			}
 			ch := make(chan PermissionResponse, 1)
-			switch permMode {
-			case PermissionModeApprove:
+			if permMode == PermissionModeApprove {
 				ch <- PermissionResponse{Decision: PermissionAlways}
 				return ch
-			case PermissionModeDeny:
-				ch <- PermissionResponse{Decision: PermissionDeny}
-				return ch
-			default:
-				if onPermission != nil {
-					return onPermission(chatID, req)
-				}
+			}
+			if permMode == PermissionModeDeny {
 				ch <- PermissionResponse{Decision: PermissionDeny}
 				return ch
 			}
+			if onPermission != nil {
+				return onPermission(chatID, req)
+			}
+			ch <- PermissionResponse{Decision: PermissionDeny}
+			return ch
 		},
 	)
 
@@ -902,7 +903,7 @@ func (s *AcpAgentService) Cancel(ctx context.Context, chatID int64) error {
 	})
 }
 
-// Shutdown stops all active agent sessions and cancels the service context.
+// Shutdown stops all agent sessions and cancels the service context.
 func (s *AcpAgentService) Shutdown() {
 	s.cancel()
 	s.mu.Lock()
@@ -917,7 +918,7 @@ func (s *AcpAgentService) Shutdown() {
 	}
 }
 
-// SetSessionPermissionMode updates the permission mode for the given chat's live session.
+// SetSessionPermissionMode updates the permission mode for the chat's live session.
 func (s *AcpAgentService) SetSessionPermissionMode(chatID int64, mode PermissionMode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -926,7 +927,6 @@ func (s *AcpAgentService) SetSessionPermissionMode(chatID int64, mode Permission
 	}
 }
 
-// slogWriter adapts slog to io.Writer for capturing subprocess stderr.
 type slogWriter struct {
 	level slog.Level
 	msg   string

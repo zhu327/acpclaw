@@ -23,7 +23,11 @@ func TestParity_AccessDeniedText(t *testing.T) {
 
 func TestParity_StdioLimitExceededText(t *testing.T) {
 	// Stdio limit exceeded message must match Python exactly.
-	assert.Equal(t, "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` (or `ACP_STDIO_LIMIT`).", stdioLimitExceededText)
+	assert.Equal(
+		t,
+		"Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` (or `ACP_STDIO_LIMIT`).",
+		stdioLimitExceededText,
+	)
 }
 
 func TestParity_PermissionDecisionLabels(t *testing.T) {

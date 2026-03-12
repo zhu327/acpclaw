@@ -31,7 +31,7 @@ agent:
   connect_timeout: 60
 `
 	f := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(f, []byte(yaml), 0600))
+	require.NoError(t, os.WriteFile(f, []byte(yaml), 0o600))
 
 	cfg, err := config.Load(f)
 	require.NoError(t, err)

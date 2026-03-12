@@ -34,7 +34,7 @@ func (e *EchoAgentService) NewSession(_ context.Context, chatID int64, workspace
 	sessionID := fmt.Sprintf("echo-%d-%d", chatID, time.Now().UnixNano())
 	info := SessionInfo{SessionID: sessionID, Workspace: workspace, UpdatedAt: time.Now()}
 	e.sessions[chatID] = info
-	e.sessionHistory[chatID] = append(e.sessionHistory[chatID], info)
+	e.sessionHistory[chatID] = upsertCappedSessionHistory(e.sessionHistory[chatID], info)
 	return nil
 }
 
@@ -143,7 +143,9 @@ func (e *EchoAgentService) SetActivityHandler(fn func(chatID int64, block Activi
 }
 
 // SetPermissionHandler stores the handler.
-func (e *EchoAgentService) SetPermissionHandler(fn func(chatID int64, req PermissionRequest) <-chan PermissionResponse) {
+func (e *EchoAgentService) SetPermissionHandler(
+	fn func(chatID int64, req PermissionRequest) <-chan PermissionResponse,
+) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.permissionHandler = fn

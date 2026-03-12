@@ -173,7 +173,10 @@ func (m *TerminalManager) Output(req acpsdk.TerminalOutputRequest) (acpsdk.Termi
 }
 
 // WaitForExit blocks until the terminal exits or ctx is cancelled.
-func (m *TerminalManager) WaitForExit(ctx context.Context, req acpsdk.WaitForTerminalExitRequest) (acpsdk.WaitForTerminalExitResponse, error) {
+func (m *TerminalManager) WaitForExit(
+	ctx context.Context,
+	req acpsdk.WaitForTerminalExitRequest,
+) (acpsdk.WaitForTerminalExitResponse, error) {
 	t := m.get(string(req.SessionId), req.TerminalId)
 	if t == nil {
 		return acpsdk.WaitForTerminalExitResponse{}, fmt.Errorf("terminal not found: %s", req.TerminalId)
