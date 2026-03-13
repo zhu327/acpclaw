@@ -10,7 +10,6 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/zhu327/acpclaw/internal/domain"
-	"github.com/zhu327/acpclaw/internal/session"
 )
 
 // ServiceConfig configures the ACP agent service.
@@ -26,8 +25,7 @@ type ServiceConfig struct {
 	// AgentEnv is the explicit set of env var names to pass to agent subprocesses.
 	// When nil, a safe default allowlist is used (PATH, HOME, LANG, etc.).
 	// Set to an empty slice to pass no env vars at all.
-	AgentEnv     []string
-	SessionStore *session.Store
+	AgentEnv []string
 }
 
 var _ domain.AgentService = (*AcpAgentService)(nil)
@@ -45,7 +43,6 @@ type AcpAgentService struct {
 	sessionLocks   sync.Map // map[string]*sync.Mutex
 	onActivity     func(string, domain.ActivityBlock)
 	onPermission   func(string, domain.PermissionRequest) <-chan domain.PermissionResponse
-	sessionStore   *session.Store
 }
 
 // NewAgentService creates a new ACP agent service. The returned service owns a
@@ -64,7 +61,6 @@ func NewAgentService(cfg ServiceConfig) *AcpAgentService {
 		cancel:         cancel,
 		liveByChat:     make(map[string]*liveSession),
 		sessionHistory: make(map[string][]domain.SessionInfo),
-		sessionStore:   cfg.SessionStore,
 	}
 }
 
@@ -200,7 +196,6 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID string, sessio
 	})
 	s.mu.Unlock()
 
-	s.writeSessionContext(chatID)
 	return nil
 }
 

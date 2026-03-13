@@ -21,22 +21,13 @@ type CronStore interface {
 	ListAllJobs() ([]domain.CronJob, error)
 }
 
-// SessionContextStore defines the interface required by MCP tools to know the active chat context.
-type SessionContextStore interface {
-	Read() (*domain.SessionContext, error)
-}
-
 // NewServer creates a minimal MCP server with no tools.
 func NewServer() *server.MCPServer {
-	return NewServerWithMemoryAndCron(nil, nil, nil)
+	return NewServerWithMemoryAndCron(nil, nil)
 }
 
 // NewServerWithMemoryAndCron creates an MCP server with memory and cron tools.
-func NewServerWithMemoryAndCron(
-	memoryStore MemoryStore,
-	cronStore CronStore,
-	sessionStore SessionContextStore,
-) *server.MCPServer {
+func NewServerWithMemoryAndCron(memoryStore MemoryStore, cronStore CronStore) *server.MCPServer {
 	s := server.NewMCPServer("acpclaw", "1.0.0")
 
 	if memoryStore != nil {
@@ -46,10 +37,10 @@ func NewServerWithMemoryAndCron(
 		s.AddTool(memoryListTool(), memoryListHandler(memoryStore))
 	}
 
-	if cronStore != nil && sessionStore != nil {
-		s.AddTool(cronCreateTool(), cronCreateHandler(cronStore, sessionStore))
-		s.AddTool(cronListTool(), cronListHandler(cronStore, sessionStore))
-		s.AddTool(cronDeleteTool(), cronDeleteHandler(cronStore, sessionStore))
+	if cronStore != nil {
+		s.AddTool(cronCreateTool(), cronCreateHandler(cronStore))
+		s.AddTool(cronListTool(), cronListHandler(cronStore))
+		s.AddTool(cronDeleteTool(), cronDeleteHandler(cronStore))
 	}
 	return s
 }

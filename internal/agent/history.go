@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
@@ -86,20 +85,5 @@ func (s *AcpAgentService) createNewSession(
 	})
 	s.mu.Unlock()
 
-	s.writeSessionContext(chatID)
 	return nil
-}
-
-// writeSessionContext writes chat context for MCP tools; failures do not affect the main flow.
-func (s *AcpAgentService) writeSessionContext(chatID string) {
-	if s.sessionStore == nil {
-		return
-	}
-	channel := s.cfg.ChannelName
-	if channel == "" {
-		channel = "telegram" // backward compatibility default
-	}
-	if err := s.sessionStore.Write(channel, chatID); err != nil {
-		slog.Warn("failed to write session context", "chatID", chatID, "channel", channel, "error", err)
-	}
 }

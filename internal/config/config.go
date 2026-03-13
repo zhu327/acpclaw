@@ -26,8 +26,9 @@ type CronConfig struct {
 
 // MemoryConfig holds memory system configuration.
 type MemoryConfig struct {
-	Enabled       bool `yaml:"enabled"`
-	AutoSummarize bool `yaml:"auto_summarize"`
+	Enabled            bool `yaml:"enabled"`
+	AutoSummarize      bool `yaml:"auto_summarize"`
+	FirstPromptContext bool `yaml:"first_prompt_context"`
 }
 
 // TelegramConfig holds Telegram bot configuration.
@@ -114,8 +115,9 @@ func defaults() *Config {
 			Format: "text",
 		},
 		Memory: MemoryConfig{
-			Enabled:       false,
-			AutoSummarize: false,
+			Enabled:            false,
+			AutoSummarize:      false,
+			FirstPromptContext: false,
 		},
 		Cron: CronConfig{
 			Enabled: false,
@@ -161,12 +163,19 @@ func applyEnv(cfg *Config) error {
 		cfg.Logging.Format = v
 	}
 	if v := os.Getenv("ACPCLAW_MEMORY_ENABLED"); v != "" {
-		cfg.Memory.Enabled = v == "1" || strings.ToLower(v) == "true"
+		cfg.Memory.Enabled = parseBoolEnv(v)
+	}
+	if v := os.Getenv("ACPCLAW_FIRST_PROMPT_CONTEXT"); v != "" {
+		cfg.Memory.FirstPromptContext = parseBoolEnv(v)
 	}
 	if v := os.Getenv("ACPCLAW_CRON_ENABLED"); v != "" {
-		cfg.Cron.Enabled = v == "1" || strings.ToLower(v) == "true"
+		cfg.Cron.Enabled = parseBoolEnv(v)
 	}
 	return nil
+}
+
+func parseBoolEnv(v string) bool {
+	return v == "1" || strings.ToLower(v) == "true"
 }
 
 func parseInt64List(s string) ([]int64, error) {

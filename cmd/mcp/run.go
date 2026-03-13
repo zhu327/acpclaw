@@ -8,7 +8,6 @@ import (
 	"github.com/zhu327/acpclaw/internal/cron"
 	internalmcp "github.com/zhu327/acpclaw/internal/mcp"
 	"github.com/zhu327/acpclaw/internal/memory"
-	"github.com/zhu327/acpclaw/internal/session"
 	"github.com/zhu327/acpclaw/internal/templates"
 )
 
@@ -17,7 +16,6 @@ type acpclawPaths struct {
 	memoryDir  string
 	historyDir string
 	cronDir    string
-	contextDir string
 }
 
 func getAcpclawPaths() acpclawPaths {
@@ -25,7 +23,6 @@ func getAcpclawPaths() acpclawPaths {
 		memoryDir:  config.GetAcpclawMemoryDir(),
 		historyDir: config.GetAcpclawHistoryDir(),
 		cronDir:    config.GetAcpclawCronDir(),
-		contextDir: config.GetAcpclawContextDir(),
 	}
 }
 
@@ -59,7 +56,6 @@ func run() error {
 	}
 
 	cronStore := cron.NewStore(paths.cronDir)
-	sessionStore := session.NewStore(paths.contextDir)
-	s := internalmcp.NewServerWithMemoryAndCron(memorySvc, cronStore, sessionStore)
+	s := internalmcp.NewServerWithMemoryAndCron(memorySvc, cronStore)
 	return server.ServeStdio(s)
 }

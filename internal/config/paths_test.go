@@ -51,16 +51,6 @@ func TestGetAcpclawCronDir(t *testing.T) {
 	}
 }
 
-func TestGetAcpclawContextDir(t *testing.T) {
-	contextDir := GetAcpclawContextDir()
-	baseDir := GetAcpclawBaseDir()
-
-	// ContextDir should match BaseDir.
-	if contextDir != baseDir {
-		t.Errorf("expected contextDir to equal baseDir, got %s vs %s", contextDir, baseDir)
-	}
-}
-
 func TestAcpclawPathsConsistency(t *testing.T) {
 	baseDir := GetAcpclawBaseDir()
 
@@ -69,7 +59,6 @@ func TestAcpclawPathsConsistency(t *testing.T) {
 		"memory":  GetAcpclawMemoryDir(),
 		"history": GetAcpclawHistoryDir(),
 		"cron":    GetAcpclawCronDir(),
-		"context": GetAcpclawContextDir(),
 	}
 
 	for name, path := range paths {

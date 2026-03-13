@@ -50,21 +50,6 @@ func (m *mockCronStore) ListAllJobs() ([]domain.CronJob, error) {
 	return append([]domain.CronJob(nil), m.jobs...), nil
 }
 
-// mockSessionContextStore returns a fixed session context.
-type mockSessionContextStore struct {
-	ctx *domain.SessionContext
-}
-
-func newMockSessionContextStore(channel, chatID string) *mockSessionContextStore {
-	return &mockSessionContextStore{
-		ctx: &domain.SessionContext{Channel: channel, ChatID: chatID},
-	}
-}
-
-func (m *mockSessionContextStore) Read() (*domain.SessionContext, error) {
-	return m.ctx, nil
-}
-
 func makeCronRequest(name string, args map[string]any) mcp.CallToolRequest {
 	return mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
@@ -74,14 +59,29 @@ func makeCronRequest(name string, args map[string]any) mcp.CallToolRequest {
 	}
 }
 
+func cronCreateArgs(channel, chatID string) map[string]any {
+	return map[string]any{"channel": channel, "chatId": chatID}
+}
+
 func TestCronCreateHandler(t *testing.T) {
 	cronStore := newMockCronStore()
-	sessionStore := newMockSessionContextStore("telegram", "123")
-	handler := cronCreateHandler(cronStore, sessionStore)
+	handler := cronCreateHandler(cronStore)
 	ctx := context.Background()
 
+	t.Run("missing channel", func(t *testing.T) {
+		req := makeCronRequest("cron_create", map[string]any{
+			"message":  "hello",
+			"cronExpr": "0 9 * * *",
+			"chatId":   "123",
+		})
+		res, err := handler(ctx, req)
+		require.NoError(t, err)
+		require.True(t, res.IsError)
+		assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "channel and chatId")
+	})
+
 	t.Run("missing message", func(t *testing.T) {
-		req := makeCronRequest("cron_create", nil)
+		req := makeCronRequest("cron_create", cronCreateArgs("telegram", "123"))
 		res, err := handler(ctx, req)
 		require.NoError(t, err)
 		require.True(t, res.IsError)
@@ -89,7 +89,11 @@ func TestCronCreateHandler(t *testing.T) {
 	})
 
 	t.Run("missing cronExpr and runAt", func(t *testing.T) {
-		req := makeCronRequest("cron_create", map[string]any{"message": "hello"})
+		req := makeCronRequest("cron_create", map[string]any{
+			"message": "hello",
+			"channel": "telegram",
+			"chatId":  "123",
+		})
 		res, err := handler(ctx, req)
 		require.NoError(t, err)
 		require.True(t, res.IsError)
@@ -97,11 +101,11 @@ func TestCronCreateHandler(t *testing.T) {
 	})
 
 	t.Run("create with cronExpr", func(t *testing.T) {
-		req := makeCronRequest("cron_create", map[string]any{
-			"message":  "remind me",
-			"cronExpr": "0 9 * * 1-5",
-			"label":    "weekday reminder",
-		})
+		args := cronCreateArgs("telegram", "123")
+		args["message"] = "remind me"
+		args["cronExpr"] = "0 9 * * 1-5"
+		args["label"] = "weekday reminder"
+		req := makeCronRequest("cron_create", args)
 		res, err := handler(ctx, req)
 		require.NoError(t, err)
 		require.False(t, res.IsError)
@@ -116,10 +120,10 @@ func TestCronCreateHandler(t *testing.T) {
 
 	t.Run("create with runAt", func(t *testing.T) {
 		runAt := time.Now().Add(time.Hour).Format(time.RFC3339)
-		req := makeCronRequest("cron_create", map[string]any{
-			"message": "one-time",
-			"runAt":   runAt,
-		})
+		args := cronCreateArgs("telegram", "123")
+		args["message"] = "one-time"
+		args["runAt"] = runAt
+		req := makeCronRequest("cron_create", args)
 		res, err := handler(ctx, req)
 		require.NoError(t, err)
 		require.False(t, res.IsError)
@@ -135,11 +139,10 @@ func TestCronListHandler(t *testing.T) {
 	require.NoError(t, cronStore.AddJob(domain.CronJob{
 		ID: "j1", Channel: "telegram", ChatID: "123", Message: "m1", Label: "L1", Enabled: true,
 	}))
-	sessionStore := newMockSessionContextStore("telegram", "123")
-	handler := cronListHandler(cronStore, sessionStore)
+	handler := cronListHandler(cronStore)
 	ctx := context.Background()
 
-	req := makeCronRequest("cron_list", nil)
+	req := makeCronRequest("cron_list", cronCreateArgs("telegram", "123"))
 	res, err := handler(ctx, req)
 	require.NoError(t, err)
 	require.False(t, res.IsError)
@@ -152,12 +155,11 @@ func TestCronListHandler(t *testing.T) {
 func TestCronDeleteHandler(t *testing.T) {
 	cronStore := newMockCronStore()
 	require.NoError(t, cronStore.AddJob(domain.CronJob{ID: "j1", Channel: "telegram", ChatID: "123", Message: "m1"}))
-	sessionStore := newMockSessionContextStore("telegram", "123")
-	handler := cronDeleteHandler(cronStore, sessionStore)
+	handler := cronDeleteHandler(cronStore)
 	ctx := context.Background()
 
 	t.Run("missing id", func(t *testing.T) {
-		req := makeCronRequest("cron_delete", nil)
+		req := makeCronRequest("cron_delete", cronCreateArgs("telegram", "123"))
 		res, err := handler(ctx, req)
 		require.NoError(t, err)
 		require.True(t, res.IsError)
@@ -165,7 +167,9 @@ func TestCronDeleteHandler(t *testing.T) {
 	})
 
 	t.Run("delete", func(t *testing.T) {
-		req := makeCronRequest("cron_delete", map[string]any{"id": "j1"})
+		args := cronCreateArgs("telegram", "123")
+		args["id"] = "j1"
+		req := makeCronRequest("cron_delete", args)
 		res, err := handler(ctx, req)
 		require.NoError(t, err)
 		require.False(t, res.IsError)

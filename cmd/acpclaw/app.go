@@ -24,7 +24,6 @@ import (
 	"github.com/zhu327/acpclaw/internal/dispatcher"
 	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/memory"
-	"github.com/zhu327/acpclaw/internal/session"
 	"github.com/zhu327/acpclaw/internal/templates"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
@@ -148,7 +147,6 @@ func buildAgentService(
 			},
 		},
 	}
-	svcCfg.SessionStore = session.NewStore(config.GetAcpclawContextDir())
 	if echoMode {
 		slog.Info("echo mode enabled: using EchoAgentService")
 		return agent.NewEchoAgentService()
@@ -172,10 +170,12 @@ func buildTelegramBot(cfg *config.Config) (*telego.Bot, error) {
 
 func buildDispatcher(cfg *config.Config, agentSvc domain.AgentService) *dispatcher.Dispatcher {
 	dispCfg := dispatcher.Config{
-		DefaultWorkspace: cfg.Agent.Workspace,
-		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
-		AllowedUsernames: cfg.Telegram.AllowedUsernames,
-		AutoSummarize:    cfg.Memory.AutoSummarize,
+		DefaultWorkspace:   cfg.Agent.Workspace,
+		AllowedUserIDs:     cfg.Telegram.AllowedUserIDs,
+		AllowedUsernames:   cfg.Telegram.AllowedUsernames,
+		AutoSummarize:      cfg.Memory.AutoSummarize,
+		FirstPromptContext: cfg.Memory.FirstPromptContext,
+		ChannelName:        "telegram",
 		NewSummarizer: func(chatID string) domain.Summarizer {
 			return agent.NewAgentSummarizer(agentSvc, chatID)
 		},

@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,21 +12,20 @@ import (
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
-var errNoSession = errors.New("no active session context found, please ensure a session is active")
-
-// sessionContextOrError fetches the active session context; on failure it returns
-// an error result that the handler can return directly.
-func sessionContextOrError(store SessionContextStore) (*domain.SessionContext, *mcp.CallToolResult) {
-	ctx, err := store.Read()
-	if err != nil {
-		return nil, mcp.NewToolResultError(errNoSession.Error())
-	}
-	return ctx, nil
-}
-
 func parseStringArg(req mcp.CallToolRequest, name string) string {
 	v, _ := mcp.ParseArgument(req, name, "").(string)
 	return v
+}
+
+// parseChannelAndChatID extracts channel and chatId from the request.
+// Returns (channel, chatID, nil) on success, or ("", "", *mcp.CallToolResult) when validation fails.
+func parseChannelAndChatID(req mcp.CallToolRequest) (channel, chatID string, errResult *mcp.CallToolResult) {
+	channel = parseStringArg(req, "channel")
+	chatID = parseStringArg(req, "chatId")
+	if channel == "" || chatID == "" {
+		return "", "", mcp.NewToolResultError("channel and chatId are required")
+	}
+	return channel, chatID, nil
 }
 
 func cronCreateTool() mcp.Tool {
@@ -40,6 +38,14 @@ func cronCreateTool() mcp.Tool {
 				"message": map[string]interface{}{
 					"type":        "string",
 					"description": "Prompt to send when the cron job triggers",
+				},
+				"channel": map[string]interface{}{
+					"type":        "string",
+					"description": "Channel type (e.g. 'telegram')",
+				},
+				"chatId": map[string]interface{}{
+					"type":        "string",
+					"description": "Chat ID for the task target",
 				},
 				"cronExpr": map[string]interface{}{
 					"type":        "string",
@@ -54,14 +60,14 @@ func cronCreateTool() mcp.Tool {
 					"description": "Human-readable task description",
 				},
 			},
-			Required: []string{"message"},
+			Required: []string{"message", "channel", "chatId"},
 		},
 	}
 }
 
-func cronCreateHandler(store CronStore, sessionStore SessionContextStore) server.ToolHandlerFunc {
+func cronCreateHandler(store CronStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		lastCtx, errRes := sessionContextOrError(sessionStore)
+		channel, chatID, errRes := parseChannelAndChatID(request)
 		if errRes != nil {
 			return errRes, nil
 		}
@@ -73,8 +79,8 @@ func cronCreateHandler(store CronStore, sessionStore SessionContextStore) server
 
 		job := domain.CronJob{
 			ID:        uuid.New().String(),
-			Channel:   lastCtx.Channel,
-			ChatID:    lastCtx.ChatID,
+			Channel:   channel,
+			ChatID:    chatID,
 			Message:   message,
 			Enabled:   true,
 			CreatedAt: time.Now(),
@@ -111,21 +117,30 @@ func cronListTool() mcp.Tool {
 		Name:        "cron_list",
 		Description: "List all scheduled tasks.",
 		InputSchema: mcp.ToolInputSchema{
-			Type:       "object",
-			Properties: map[string]interface{}{},
-			Required:   []string{},
+			Type: "object",
+			Properties: map[string]interface{}{
+				"channel": map[string]interface{}{
+					"type":        "string",
+					"description": "Channel type (e.g. 'telegram')",
+				},
+				"chatId": map[string]interface{}{
+					"type":        "string",
+					"description": "Chat ID for the task target",
+				},
+			},
+			Required: []string{"channel", "chatId"},
 		},
 	}
 }
 
-func cronListHandler(store CronStore, sessionStore SessionContextStore) server.ToolHandlerFunc {
+func cronListHandler(store CronStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		lastCtx, errRes := sessionContextOrError(sessionStore)
+		channel, chatID, errRes := parseChannelAndChatID(request)
 		if errRes != nil {
 			return errRes, nil
 		}
 
-		jobs, err := store.LoadJobs(lastCtx.Channel, lastCtx.ChatID)
+		jobs, err := store.LoadJobs(channel, chatID)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -153,25 +168,33 @@ func cronDeleteTool() mcp.Tool {
 					"type":        "string",
 					"description": "Job ID to delete",
 				},
+				"channel": map[string]interface{}{
+					"type":        "string",
+					"description": "Channel type (e.g. 'telegram')",
+				},
+				"chatId": map[string]interface{}{
+					"type":        "string",
+					"description": "Chat ID for the task target",
+				},
 			},
-			Required: []string{"id"},
+			Required: []string{"id", "channel", "chatId"},
 		},
 	}
 }
 
-func cronDeleteHandler(store CronStore, sessionStore SessionContextStore) server.ToolHandlerFunc {
+func cronDeleteHandler(store CronStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := parseStringArg(request, "id")
 		if id == "" {
 			return mcp.NewToolResultError("id is required"), nil
 		}
 
-		lastCtx, errRes := sessionContextOrError(sessionStore)
+		channel, chatID, errRes := parseChannelAndChatID(request)
 		if errRes != nil {
 			return errRes, nil
 		}
 
-		if err := store.DeleteJob(lastCtx.Channel, lastCtx.ChatID, id); err != nil {
+		if err := store.DeleteJob(channel, chatID, id); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 

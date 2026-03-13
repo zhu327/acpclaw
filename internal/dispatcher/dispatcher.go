@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -21,15 +22,18 @@ import (
 type MemoryService interface {
 	AppendHistory(chatID, role, text string) error
 	SummarizeSession(ctx context.Context, chatID string, summarizer domain.Summarizer) error
+	BuildSessionContext(ctx context.Context) (string, error)
 }
 
 // Config holds Dispatcher configuration.
 type Config struct {
-	DefaultWorkspace string
-	AllowedUserIDs   []int64
-	AllowedUsernames []string
-	AutoSummarize    bool
-	NewSummarizer    func(chatID string) domain.Summarizer // injected by cmd/
+	DefaultWorkspace   string
+	AllowedUserIDs     []int64
+	AllowedUsernames   []string
+	AutoSummarize      bool
+	NewSummarizer      func(chatID string) domain.Summarizer // injected by cmd/
+	FirstPromptContext bool
+	ChannelName        string
 }
 
 type pendingPrompt struct {
@@ -140,7 +144,7 @@ func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 		return
 	}
 
-	// Implicit session start (separate lock to avoid blocking queue check)
+	isNewSession := false
 	if d.agentSvc.ActiveSession(chatID) == nil {
 		startLock := d.implicitStartMutex(chatID)
 		startLock.Lock()
@@ -154,6 +158,7 @@ func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 				replyBestEffortMsg(resp, domain.OutboundMessage{Text: "❌ Failed to start session."})
 				return
 			}
+			isNewSession = true
 		}
 		startLock.Unlock()
 	}
@@ -172,7 +177,7 @@ func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 	d.activeResponders.Store(chatID, resp)
 	defer d.activeResponders.Delete(chatID)
 
-	d.runPromptLoop(d.ctx, chatID, input, resp)
+	d.runPromptLoop(d.ctx, chatID, input, resp, isNewSession)
 }
 
 func (d *Dispatcher) queueBusyPrompt(chatID string, input domain.PromptInput, resp domain.Responder, replyToMsgID int) {
@@ -213,8 +218,15 @@ func (d *Dispatcher) runPromptLoop(
 	chatID string,
 	input domain.PromptInput,
 	resp domain.Responder,
+	isFirstTurn bool,
 ) {
 	for {
+		if isFirstTurn {
+			if prefix := d.buildFirstPromptPrefix(chatID); prefix != "" {
+				input.Text = prefix + "\n\n---\n\n" + input.Text
+			}
+			isFirstTurn = false
+		}
 		d.appendUserToHistory(chatID, input.Text)
 
 		reply, err := d.agentSvc.Prompt(ctx, chatID, input)
@@ -227,6 +239,25 @@ func (d *Dispatcher) runPromptLoop(
 		bestEffort(func() error { return resp.ClearBusyNotification(p.notifyMsgID) })
 		input = p.input
 	}
+}
+
+func (d *Dispatcher) buildFirstPromptPrefix(chatID string) string {
+	var parts []string
+	if d.cfg.FirstPromptContext && d.memorySvc != nil {
+		if memCtx, err := d.memorySvc.BuildSessionContext(d.ctx); err == nil && memCtx != "" {
+			parts = append(parts, memCtx)
+		}
+	}
+	parts = append(parts, d.buildSessionInfoBlock(chatID))
+	return strings.Join(parts, "\n\n")
+}
+
+func (d *Dispatcher) buildSessionInfoBlock(chatID string) string {
+	channel := d.cfg.ChannelName
+	if channel == "" {
+		channel = "telegram"
+	}
+	return fmt.Sprintf("[Session Info]\nchannel: %s\nchat_id: %s\n[/Session Info]", channel, chatID)
 }
 
 func (d *Dispatcher) appendUserToHistory(chatID string, text string) {

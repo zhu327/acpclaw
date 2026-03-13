@@ -38,12 +38,6 @@ func GetAcpclawCronDir() string {
 	return filepath.Join(GetAcpclawBaseDir(), "cron")
 }
 
-// GetAcpclawContextDir returns the context file directory (same as BaseDir).
-// Note: callers must ensure the directory exists (use os.MkdirAll).
-func GetAcpclawContextDir() string {
-	return GetAcpclawBaseDir()
-}
-
 // EnsureAcpclawMemoryDir ensures the memory directory exists and returns the path.
 func EnsureAcpclawMemoryDir() (string, error) {
 	dir := GetAcpclawMemoryDir()
