@@ -2,30 +2,28 @@ package mcp
 
 import (
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/zhu327/acpclaw/internal/cron"
-	"github.com/zhu327/acpclaw/internal/memory"
-	"github.com/zhu327/acpclaw/internal/session"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 // MemoryStore defines the interface required by MCP memory tools.
 type MemoryStore interface {
-	Read(id string) (*memory.MemoryEntry, error)
-	Search(query, category string) ([]memory.MemoryEntry, error)
-	Save(entry memory.MemoryEntry) error
-	List(category string) ([]memory.MemoryEntry, error)
+	Read(id string) (*domain.MemoryEntry, error)
+	Search(query, category string) ([]domain.MemoryEntry, error)
+	Save(entry domain.MemoryEntry) error
+	List(category string) ([]domain.MemoryEntry, error)
 }
 
 // CronStore defines the interface required by MCP cron tools.
 type CronStore interface {
-	AddJob(job cron.Job) error
-	LoadJobs(channel, chatID string) ([]cron.Job, error)
+	AddJob(job domain.CronJob) error
+	LoadJobs(channel, chatID string) ([]domain.CronJob, error)
 	DeleteJob(channel, chatID, jobID string) error
-	ListAllJobs() ([]cron.Job, error)
+	ListAllJobs() ([]domain.CronJob, error)
 }
 
 // SessionContextStore defines the interface required by MCP tools to know the active chat context.
 type SessionContextStore interface {
-	Read() (*session.Context, error)
+	Read() (*domain.SessionContext, error)
 }
 
 // NewServer creates a minimal MCP server with no tools.

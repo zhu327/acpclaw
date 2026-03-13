@@ -6,13 +6,14 @@ import (
 	"time"
 
 	robfig "github.com/robfig/cron/v3"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 // Scheduler polls and triggers cron jobs.
 type Scheduler struct {
 	store     *Store
 	interval  time.Duration
-	onTrigger func(Job)
+	onTrigger func(domain.CronJob)
 }
 
 // NewScheduler creates a new Scheduler.
@@ -24,7 +25,7 @@ func NewScheduler(store *Store, interval time.Duration) *Scheduler {
 }
 
 // OnTrigger registers the callback for triggered jobs.
-func (s *Scheduler) OnTrigger(fn func(Job)) {
+func (s *Scheduler) OnTrigger(fn func(domain.CronJob)) {
 	s.onTrigger = fn
 }
 

@@ -12,7 +12,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/zhu327/acpclaw/internal/agent"
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
@@ -30,11 +29,12 @@ type Config struct {
 	AllowedUserIDs   []int64
 	AllowedUsernames []string
 	AutoSummarize    bool
+	NewSummarizer    func(chatID string) domain.Summarizer // injected by cmd/
 }
 
 type pendingPrompt struct {
 	input        domain.PromptInput
-	chatID       int64
+	chatID       string
 	token        string
 	notifyMsgID  int
 	replyToMsgID int
@@ -42,7 +42,7 @@ type pendingPrompt struct {
 
 type pendingPermission struct {
 	ch     chan domain.PermissionResponse
-	chatID int64
+	chatID string
 }
 
 const permissionRequestTTL = 5 * time.Minute
@@ -55,20 +55,20 @@ type Dispatcher struct {
 	cancel   context.CancelFunc
 
 	convMu             sync.Map // chatID (string) -> *sync.Mutex
-	implicitStartLocks sync.Map // chatID (int64) -> *sync.Mutex
-	cancelRequested    sync.Map // chatID (int64) -> struct{}
+	implicitStartLocks sync.Map // chatID (string) -> *sync.Mutex
+	cancelRequested    sync.Map // chatID (string) -> struct{}
 
-	pendingByChat map[int64]*pendingPrompt
+	pendingByChat map[string]*pendingPrompt
 	pendingMu     sync.Mutex
 
 	pendingPerms  sync.Map // reqID -> *pendingPermission
 	permActions   map[string][]domain.PermissionDecision
 	permActionsMu sync.Mutex
 
-	pendingResumeChoices map[int64][]domain.SessionInfo
+	pendingResumeChoices map[string][]domain.SessionInfo
 	resumeChoicesMu      sync.Mutex
 
-	activeResponders sync.Map // chatID (int64) -> domain.Responder
+	activeResponders sync.Map // chatID (string) -> domain.Responder
 
 	memorySvc MemoryService
 }
@@ -81,8 +81,8 @@ func New(cfg Config) *Dispatcher {
 		ctx:                  ctx,
 		cancel:               cancel,
 		permActions:          make(map[string][]domain.PermissionDecision),
-		pendingByChat:        make(map[int64]*pendingPrompt),
-		pendingResumeChoices: make(map[int64][]domain.SessionInfo),
+		pendingByChat:        make(map[string]*pendingPrompt),
+		pendingResumeChoices: make(map[string][]domain.SessionInfo),
 	}
 }
 
@@ -109,14 +109,9 @@ func (d *Dispatcher) getOrCreateMutex(chatID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-func (d *Dispatcher) implicitStartMutex(chatID int64) *sync.Mutex {
+func (d *Dispatcher) implicitStartMutex(chatID string) *sync.Mutex {
 	v, _ := d.implicitStartLocks.LoadOrStore(chatID, &sync.Mutex{})
 	return v.(*sync.Mutex)
-}
-
-func parseChatID(s string) (int64, bool) {
-	id, err := strconv.ParseInt(s, 10, 64)
-	return id, err == nil
 }
 
 func randomToken() string {
@@ -134,8 +129,8 @@ func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 		return
 	}
 
-	chatID, ok := parseChatID(msg.ChatID)
-	if !ok {
+	chatID := msg.ChatID
+	if chatID == "" {
 		slog.Error("invalid chatID", "chat_id", msg.ChatID)
 		return
 	}
@@ -180,7 +175,7 @@ func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 	d.runPromptLoop(d.ctx, chatID, input, resp)
 }
 
-func (d *Dispatcher) queueBusyPrompt(chatID int64, input domain.PromptInput, resp domain.Responder, replyToMsgID int) {
+func (d *Dispatcher) queueBusyPrompt(chatID string, input domain.PromptInput, resp domain.Responder, replyToMsgID int) {
 	token := randomToken()
 
 	d.pendingMu.Lock()
@@ -205,7 +200,7 @@ func (d *Dispatcher) queueBusyPrompt(chatID int64, input domain.PromptInput, res
 	}
 }
 
-func (d *Dispatcher) popPending(chatID int64) *pendingPrompt {
+func (d *Dispatcher) popPending(chatID string) *pendingPrompt {
 	d.pendingMu.Lock()
 	p := d.pendingByChat[chatID]
 	delete(d.pendingByChat, chatID)
@@ -213,7 +208,12 @@ func (d *Dispatcher) popPending(chatID int64) *pendingPrompt {
 	return p
 }
 
-func (d *Dispatcher) runPromptLoop(ctx context.Context, chatID int64, input domain.PromptInput, resp domain.Responder) {
+func (d *Dispatcher) runPromptLoop(
+	ctx context.Context,
+	chatID string,
+	input domain.PromptInput,
+	resp domain.Responder,
+) {
 	for {
 		d.appendUserToHistory(chatID, input.Text)
 
@@ -229,16 +229,16 @@ func (d *Dispatcher) runPromptLoop(ctx context.Context, chatID int64, input doma
 	}
 }
 
-func (d *Dispatcher) appendUserToHistory(chatID int64, text string) {
+func (d *Dispatcher) appendUserToHistory(chatID string, text string) {
 	if d.memorySvc == nil || text == "" {
 		return
 	}
-	if err := d.memorySvc.AppendHistory(strconv.FormatInt(chatID, 10), "user", text); err != nil {
+	if err := d.memorySvc.AppendHistory(chatID, "user", text); err != nil {
 		slog.Warn("failed to append user message to history", "chat_id", chatID, "error", err)
 	}
 }
 
-func (d *Dispatcher) handlePromptResult(chatID int64, resp domain.Responder, reply *domain.AgentReply, err error) {
+func (d *Dispatcher) handlePromptResult(chatID string, resp domain.Responder, reply *domain.AgentReply, err error) {
 	if err != nil {
 		if _, wasCancelled := d.cancelRequested.LoadAndDelete(chatID); !wasCancelled {
 			d.sendPromptError(chatID, resp, err)
@@ -246,7 +246,7 @@ func (d *Dispatcher) handlePromptResult(chatID int64, resp domain.Responder, rep
 	}
 	if d.hasReplyContent(reply) {
 		if err == nil && d.memorySvc != nil && reply.Text != "" {
-			if appendErr := d.memorySvc.AppendHistory(strconv.FormatInt(chatID, 10), "assistant", reply.Text); appendErr != nil {
+			if appendErr := d.memorySvc.AppendHistory(chatID, "assistant", reply.Text); appendErr != nil {
 				slog.Warn("failed to append assistant reply to history", "chat_id", chatID, "error", appendErr)
 			}
 		}
@@ -258,13 +258,13 @@ func (d *Dispatcher) hasReplyContent(reply *domain.AgentReply) bool {
 	return reply != nil && (reply.Text != "" || len(reply.Images) > 0 || len(reply.Files) > 0)
 }
 
-func (d *Dispatcher) sendPromptError(chatID int64, resp domain.Responder, err error) {
+func (d *Dispatcher) sendPromptError(chatID string, resp domain.Responder, err error) {
 	switch {
-	case errors.Is(err, agent.ErrAgentOutputLimitExceeded):
+	case errors.Is(err, domain.ErrAgentOutputLimitExceeded):
 		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
 			Text: "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` (or `ACP_STDIO_LIMIT`).",
 		})
-	case errors.Is(err, agent.ErrNoActiveSession):
+	case errors.Is(err, domain.ErrNoActiveSession):
 		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
 			Text: "No active session. Send a message again or use /new [workspace].",
 		})
@@ -316,7 +316,7 @@ func convertToPromptInput(msg domain.InboundMessage) domain.PromptInput {
 }
 
 func (d *Dispatcher) setupCallbacks() {
-	d.agentSvc.SetPermissionHandler(func(chatID int64, req domain.PermissionRequest) <-chan domain.PermissionResponse {
+	d.agentSvc.SetPermissionHandler(func(chatID string, req domain.PermissionRequest) <-chan domain.PermissionResponse {
 		ch := make(chan domain.PermissionResponse, 1)
 		pp := &pendingPermission{ch: ch, chatID: chatID}
 		d.pendingPerms.Store(req.ID, pp)
@@ -339,7 +339,7 @@ func (d *Dispatcher) setupCallbacks() {
 		return ch
 	})
 
-	d.agentSvc.SetActivityHandler(func(chatID int64, block domain.ActivityBlock) {
+	d.agentSvc.SetActivityHandler(func(chatID string, block domain.ActivityBlock) {
 		if v, ok := d.activeResponders.Load(chatID); ok {
 			resp := v.(domain.Responder)
 			workspace := ""
@@ -420,17 +420,18 @@ func (d *Dispatcher) PermissionActions(reqID string) []domain.PermissionDecision
 
 // HandleBusySendNow is called by Channel when "Send now" button is clicked.
 func (d *Dispatcher) HandleBusySendNow(chatID int64, token string) (ok bool, err error) {
+	chatIDStr := strconv.FormatInt(chatID, 10)
 	d.pendingMu.Lock()
-	p := d.pendingByChat[chatID]
+	p := d.pendingByChat[chatIDStr]
 	if p == nil || p.token != token {
 		d.pendingMu.Unlock()
 		return false, nil
 	}
 	d.pendingMu.Unlock()
 
-	d.cancelRequested.Store(chatID, struct{}{})
-	if err := d.agentSvc.Cancel(d.ctx, chatID); err != nil {
-		d.cancelRequested.Delete(chatID)
+	d.cancelRequested.Store(chatIDStr, struct{}{})
+	if err := d.agentSvc.Cancel(d.ctx, chatIDStr); err != nil {
+		d.cancelRequested.Delete(chatIDStr)
 		return false, err
 	}
 	return true, nil
@@ -438,9 +439,10 @@ func (d *Dispatcher) HandleBusySendNow(chatID int64, token string) (ok bool, err
 
 // ResolveResumeChoice resolves a pending resume keyboard selection.
 func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID int64, index int) (*domain.SessionInfo, error) {
+	chatIDStr := strconv.FormatInt(chatID, 10)
 	d.resumeChoicesMu.Lock()
-	candidates := d.pendingResumeChoices[chatID]
-	delete(d.pendingResumeChoices, chatID)
+	candidates := d.pendingResumeChoices[chatIDStr]
+	delete(d.pendingResumeChoices, chatIDStr)
 	d.resumeChoicesMu.Unlock()
 
 	if candidates == nil {
@@ -450,7 +452,7 @@ func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID int64, inde
 		return nil, fmt.Errorf("invalid selection")
 	}
 	s := candidates[index]
-	if err := d.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
+	if err := d.agentSvc.LoadSession(ctx, chatIDStr, s.SessionID, s.Workspace); err != nil {
 		return nil, err
 	}
 	return &s, nil

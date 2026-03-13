@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
@@ -355,8 +354,6 @@ func (c *TelegramChannel) sendPlainText(chatID int64, text string) {
 
 // sendOutbound sends an OutboundMessage to a Telegram chat.
 func sendOutbound(bot *telego.Bot, chatID int64, msg domain.OutboundMessage) error {
-	_ = time.Now() // keep time import used
-
 	for _, img := range msg.Images {
 		file := tu.FileFromBytes(img.Data, img.Name)
 		if _, err := bot.SendPhoto(context.TODO(), &telego.SendPhotoParams{

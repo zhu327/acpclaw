@@ -10,15 +10,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/zhu327/acpclaw/internal/cron"
-	"github.com/zhu327/acpclaw/internal/session"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 var errNoSession = errors.New("no active session context found, please ensure a session is active")
 
 // sessionContextOrError fetches the active session context; on failure it returns
 // an error result that the handler can return directly.
-func sessionContextOrError(store SessionContextStore) (*session.Context, *mcp.CallToolResult) {
+func sessionContextOrError(store SessionContextStore) (*domain.SessionContext, *mcp.CallToolResult) {
 	ctx, err := store.Read()
 	if err != nil {
 		return nil, mcp.NewToolResultError(errNoSession.Error())
@@ -72,7 +71,7 @@ func cronCreateHandler(store CronStore, sessionStore SessionContextStore) server
 			return mcp.NewToolResultError("message is required"), nil
 		}
 
-		job := cron.Job{
+		job := domain.CronJob{
 			ID:        uuid.New().String(),
 			Channel:   lastCtx.Channel,
 			ChatID:    lastCtx.ChatID,

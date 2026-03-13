@@ -7,11 +7,14 @@ import (
 )
 
 // GetAcpclawBaseDir returns the acpclaw base directory (~/.acpclaw).
+// ACPCLAW_HOME overrides the default; if unset, uses ~/.acpclaw.
 // If the user home directory cannot be resolved, fall back to the system temp directory.
 func GetAcpclawBaseDir() string {
+	if home := os.Getenv("ACPCLAW_HOME"); home != "" {
+		return home
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// Fallback to temp directory if HOME is not available
 		return filepath.Join(os.TempDir(), ".acpclaw")
 	}
 	return filepath.Join(home, ".acpclaw")

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 // Store manages cron jobs persistence.
@@ -25,23 +27,23 @@ func (s *Store) getPath(channel, chatID string) string {
 }
 
 // LoadJobs loads all jobs for a specific channel and chat ID.
-func (s *Store) LoadJobs(channel, chatID string) ([]Job, error) {
+func (s *Store) LoadJobs(channel, chatID string) ([]domain.CronJob, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	return s.loadJobsLocked(channel, chatID)
 }
 
-func (s *Store) loadJobsLocked(channel, chatID string) ([]Job, error) {
+func (s *Store) loadJobsLocked(channel, chatID string) ([]domain.CronJob, error) {
 	path := s.getPath(channel, chatID)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []Job{}, nil
+			return []domain.CronJob{}, nil
 		}
 		return nil, err
 	}
-	var jobs []Job
+	var jobs []domain.CronJob
 	if err := json.Unmarshal(data, &jobs); err != nil {
 		return nil, err
 	}
@@ -49,14 +51,14 @@ func (s *Store) loadJobsLocked(channel, chatID string) ([]Job, error) {
 }
 
 // SaveJobs saves all jobs for a specific channel and chat ID.
-func (s *Store) SaveJobs(channel, chatID string, jobs []Job) error {
+func (s *Store) SaveJobs(channel, chatID string, jobs []domain.CronJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.saveJobsLocked(channel, chatID, jobs)
 }
 
-func (s *Store) saveJobsLocked(channel, chatID string, jobs []Job) error {
+func (s *Store) saveJobsLocked(channel, chatID string, jobs []domain.CronJob) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
@@ -81,7 +83,7 @@ func (s *Store) saveJobsLocked(channel, chatID string, jobs []Job) error {
 }
 
 // AddJob adds a new job.
-func (s *Store) AddJob(job Job) error {
+func (s *Store) AddJob(job domain.CronJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -94,7 +96,7 @@ func (s *Store) AddJob(job Job) error {
 }
 
 // UpdateJob updates an existing job.
-func (s *Store) UpdateJob(job Job) error {
+func (s *Store) UpdateJob(job domain.CronJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -126,7 +128,7 @@ func (s *Store) DeleteJob(channel, chatID, jobID string) error {
 		return err
 	}
 
-	var updated []Job
+	var updated []domain.CronJob
 	found := false
 	for _, j := range jobs {
 		if j.ID != jobID {
@@ -144,7 +146,7 @@ func (s *Store) DeleteJob(channel, chatID, jobID string) error {
 }
 
 // ListAllJobs returns all jobs across all files.
-func (s *Store) ListAllJobs() ([]Job, error) {
+func (s *Store) ListAllJobs() ([]domain.CronJob, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -156,7 +158,7 @@ func (s *Store) ListAllJobs() ([]Job, error) {
 		return nil, err
 	}
 
-	var allJobs []Job
+	var allJobs []domain.CronJob
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -165,7 +167,7 @@ func (s *Store) ListAllJobs() ([]Job, error) {
 		if err != nil {
 			continue
 		}
-		var jobs []Job
+		var jobs []domain.CronJob
 		if err := json.Unmarshal(data, &jobs); err == nil {
 			allJobs = append(allJobs, jobs...)
 		}

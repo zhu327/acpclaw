@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/memory"
 )
 
@@ -18,7 +19,7 @@ func TestStore_UpsertAndGet(t *testing.T) {
 		_ = store.Close()
 	}()
 
-	entry := memory.MemoryEntry{
+	entry := domain.MemoryEntry{
 		ID:       "test-1",
 		Category: "knowledge",
 		Title:    "Test Entry",
@@ -45,11 +46,11 @@ func TestStore_Search(t *testing.T) {
 		_ = store.Close()
 	}()
 
-	_ = store.Upsert(memory.MemoryEntry{
+	_ = store.Upsert(domain.MemoryEntry{
 		ID: "e1", Category: "knowledge", Title: "Go Project",
 		Content: "Building a Go web server with Gin", Date: "2026-03-12",
 	})
-	_ = store.Upsert(memory.MemoryEntry{
+	_ = store.Upsert(domain.MemoryEntry{
 		ID: "e2", Category: "episode", Title: "Python Discussion",
 		Content: "Discussed Python data science tools", Date: "2026-03-11",
 	})

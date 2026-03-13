@@ -8,18 +8,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/zhu327/acpclaw/internal/domain"
 	_ "modernc.org/sqlite" // SQLite driver
 )
-
-// MemoryEntry represents a single memory record.
-type MemoryEntry struct {
-	ID       string
-	Category string // "identity", "episode", "knowledge"
-	Title    string
-	Content  string
-	Tags     []string
-	Date     string // YYYY-MM-DD
-}
 
 // Store wraps a SQLite database for memory persistence.
 type Store struct {
@@ -84,7 +75,7 @@ func (s *Store) Close() error {
 }
 
 // Upsert inserts or replaces a memory entry.
-func (s *Store) Upsert(e MemoryEntry) error {
+func (s *Store) Upsert(e domain.MemoryEntry) error {
 	tags := strings.Join(e.Tags, ",")
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO memory (id, category, title, content, tags, date) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -94,7 +85,7 @@ func (s *Store) Upsert(e MemoryEntry) error {
 }
 
 // Get retrieves a memory entry by ID. Returns nil if not found.
-func (s *Store) Get(id string) (*MemoryEntry, error) {
+func (s *Store) Get(id string) (*domain.MemoryEntry, error) {
 	row := s.db.QueryRow(
 		`SELECT id, category, title, content, tags, date FROM memory WHERE id = ?`, id,
 	)
@@ -103,7 +94,7 @@ func (s *Store) Get(id string) (*MemoryEntry, error) {
 
 // Search performs FTS5 full-text search with optional category filter.
 // CJK characters are expanded to OR tokens for better matching.
-func (s *Store) Search(query, category string, limit int) ([]MemoryEntry, error) {
+func (s *Store) Search(query, category string, limit int) ([]domain.MemoryEntry, error) {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -111,7 +102,7 @@ func (s *Store) Search(query, category string, limit int) ([]MemoryEntry, error)
 	return s.ftsSearch(ftsQuery, category, limit)
 }
 
-func (s *Store) ftsSearch(ftsQuery, category string, limit int) ([]MemoryEntry, error) {
+func (s *Store) ftsSearch(ftsQuery, category string, limit int) ([]domain.MemoryEntry, error) {
 	query := ftsSearchQuery(category)
 	args := []any{ftsQuery}
 	if category != "" {
@@ -145,7 +136,7 @@ func ftsSearchQuery(category string) string {
 }
 
 // List returns all entries, optionally filtered by category.
-func (s *Store) List(category string) ([]MemoryEntry, error) {
+func (s *Store) List(category string) ([]domain.MemoryEntry, error) {
 	var rows *sql.Rows
 	var err error
 	if category != "" {
@@ -224,8 +215,8 @@ func (s *Store) reindexDir(memoryDir, category string) error {
 
 // --- helpers ---
 
-func scanEntry(row *sql.Row) (*MemoryEntry, error) {
-	var e MemoryEntry
+func scanEntry(row *sql.Row) (*domain.MemoryEntry, error) {
+	var e domain.MemoryEntry
 	var tags string
 	err := row.Scan(&e.ID, &e.Category, &e.Title, &e.Content, &tags, &e.Date)
 	if err == sql.ErrNoRows {
@@ -238,10 +229,10 @@ func scanEntry(row *sql.Row) (*MemoryEntry, error) {
 	return &e, nil
 }
 
-func scanEntries(rows *sql.Rows) ([]MemoryEntry, error) {
-	var results []MemoryEntry
+func scanEntries(rows *sql.Rows) ([]domain.MemoryEntry, error) {
+	var results []domain.MemoryEntry
 	for rows.Next() {
-		var e MemoryEntry
+		var e domain.MemoryEntry
 		var tags string
 		if err := rows.Scan(&e.ID, &e.Category, &e.Title, &e.Content, &tags, &e.Date); err != nil {
 			return nil, err
@@ -268,8 +259,8 @@ func splitTags(tags string) []string {
 }
 
 // parseMarkdownFile extracts a MemoryEntry from a Markdown file with optional YAML frontmatter.
-func parseMarkdownFile(id, category, content string) MemoryEntry {
-	entry := MemoryEntry{
+func parseMarkdownFile(id, category, content string) domain.MemoryEntry {
+	entry := domain.MemoryEntry{
 		ID:       id,
 		Category: category,
 		Title:    id,

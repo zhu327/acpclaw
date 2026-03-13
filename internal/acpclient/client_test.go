@@ -160,7 +160,11 @@ func TestRequestPermission_AvailableActionsFromOptions(t *testing.T) {
 				{OptionId: "allow-always", Kind: acpsdk.PermissionOptionKindAllowAlways},
 				{OptionId: "allow-once", Kind: acpsdk.PermissionOptionKindAllowOnce},
 			},
-			wantActs: []domain.PermissionDecision{domain.PermissionAlways, domain.PermissionThisTime, domain.PermissionDeny},
+			wantActs: []domain.PermissionDecision{
+				domain.PermissionAlways,
+				domain.PermissionThisTime,
+				domain.PermissionDeny,
+			},
 		},
 		{
 			name: "allow_always only -> always, deny",

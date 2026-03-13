@@ -13,11 +13,11 @@ const summarizeDateFormat = "2006-01-02"
 // AgentSummarizer uses AgentService to generate session summaries and implements domain.Summarizer.
 type AgentSummarizer struct {
 	agentSvc domain.AgentService
-	chatID   int64
+	chatID   string
 }
 
 // NewAgentSummarizer creates an agent-based summarizer.
-func NewAgentSummarizer(agentSvc domain.AgentService, chatID int64) *AgentSummarizer {
+func NewAgentSummarizer(agentSvc domain.AgentService, chatID string) *AgentSummarizer {
 	return &AgentSummarizer{
 		agentSvc: agentSvc,
 		chatID:   chatID,

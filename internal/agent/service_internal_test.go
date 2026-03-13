@@ -54,7 +54,7 @@ func TestNewSession_CreatesWorkspaceDir(t *testing.T) {
 		ConnectTimeout: time.Second,
 	})
 
-	err := svc.NewSession(context.Background(), 42, workspace)
+	err := svc.NewSession(context.Background(), "42", workspace)
 	assert.Error(t, err) // spawn will fail
 
 	info, statErr := os.Stat(workspace)
@@ -72,7 +72,7 @@ func TestNewSession_RejectsFileAsWorkspace(t *testing.T) {
 		ConnectTimeout: time.Second,
 	})
 
-	err := svc.NewSession(context.Background(), 42, filePath)
+	err := svc.NewSession(context.Background(), "42", filePath)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a directory")
 }

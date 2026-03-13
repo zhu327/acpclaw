@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,8 @@ type Service struct {
 }
 
 // NewService creates a new Service, initializing directories and opening the SQLite store.
-func NewService(memoryDir, historyDir string) (*Service, error) {
+// templateFS provides embedded template files (e.g. SOUL.md, owner-profile.md) for first-run init.
+func NewService(memoryDir, historyDir string, templateFS fs.FS) (*Service, error) {
 	for _, dir := range []string{memoryDir, historyDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create dir %s: %w", dir, err)
@@ -38,7 +40,7 @@ func NewService(memoryDir, historyDir string) (*Service, error) {
 		historyDir: historyDir,
 	}
 	// Initialize template files on first run
-	if err := svc.initializeTemplates(); err != nil {
+	if err := svc.initializeTemplates(templateFS); err != nil {
 		return nil, fmt.Errorf("initialize templates: %w", err)
 	}
 	return svc, nil
@@ -50,17 +52,17 @@ func (s *Service) Close() error {
 }
 
 // Read retrieves a memory entry by ID.
-func (s *Service) Read(id string) (*MemoryEntry, error) {
+func (s *Service) Read(id string) (*domain.MemoryEntry, error) {
 	return s.store.Get(id)
 }
 
 // Search performs full-text search across memories.
-func (s *Service) Search(query, category string) ([]MemoryEntry, error) {
+func (s *Service) Search(query, category string) ([]domain.MemoryEntry, error) {
 	return s.store.Search(query, category, 5)
 }
 
 // Save writes a MemoryEntry to both the Markdown file and SQLite store.
-func (s *Service) Save(entry MemoryEntry) error {
+func (s *Service) Save(entry domain.MemoryEntry) error {
 	if entry.Date == "" {
 		entry.Date = time.Now().Format("2006-01-02")
 	}
@@ -77,7 +79,7 @@ func (s *Service) Save(entry MemoryEntry) error {
 }
 
 // resolveEntryFilePath determines the Markdown file path from category and ensures the directory exists.
-func (s *Service) resolveEntryFilePath(entry MemoryEntry) (string, error) {
+func (s *Service) resolveEntryFilePath(entry domain.MemoryEntry) (string, error) {
 	var relPath string
 	switch entry.Category {
 	case "identity":
@@ -97,7 +99,7 @@ func (s *Service) resolveEntryFilePath(entry MemoryEntry) (string, error) {
 }
 
 // List returns all entries, optionally filtered by category.
-func (s *Service) List(category string) ([]MemoryEntry, error) {
+func (s *Service) List(category string) ([]domain.MemoryEntry, error) {
 	return s.store.List(category)
 }
 
@@ -133,7 +135,7 @@ func (s *Service) SummarizeSession(ctx context.Context, chatID string, summarize
 		return nil
 	}
 
-	entry := MemoryEntry{
+	entry := domain.MemoryEntry{
 		ID:       buildEpisodeFileName(chatID),
 		Category: "episode",
 		Title:    extractTitle(summary),
@@ -170,7 +172,7 @@ func (s *Service) Reindex() error {
 
 // --- helpers ---
 
-func buildMarkdownFile(e MemoryEntry) string {
+func buildMarkdownFile(e domain.MemoryEntry) string {
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	fmt.Fprintf(&sb, "title: %q\n", e.Title)
@@ -204,34 +206,12 @@ func extractTitle(text string) string {
 	return "Session Summary"
 }
 
-// initializeTemplates copies template files to memory directory on first run.
-func (s *Service) initializeTemplates() error {
-	// Check if SOUL.md already exists (indicates this is not first run)
+// initializeTemplates copies template files from templateFS to memory directory on first run.
+func (s *Service) initializeTemplates(templateFS fs.FS) error {
 	soulPath := filepath.Join(s.memoryDir, "SOUL.md")
 	if _, err := os.Stat(soulPath); err == nil {
-		return nil // Templates already exist
-	}
-
-	// Get the executable directory to find templates folder
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
-	templatesDir := filepath.Join(filepath.Dir(exe), "..", "templates")
-
-	// If templates directory doesn't exist, try relative to current working directory
-	if _, err := os.Stat(templatesDir); os.IsNotExist(err) {
-		if cwd, err := os.Getwd(); err == nil {
-			templatesDir = filepath.Join(cwd, "templates")
-		}
-	}
-
-	// If templates directory still doesn't exist, skip initialization (not an error)
-	if _, err := os.Stat(templatesDir); os.IsNotExist(err) {
 		return nil
 	}
-
-	// Copy template files
 	templates := []struct {
 		name string
 		dest string
@@ -243,28 +223,18 @@ func (s *Service) initializeTemplates() error {
 		{"projects.md", "knowledge/projects.md"},
 		{"notes.md", "knowledge/notes.md"},
 	}
-
 	for _, tmpl := range templates {
-		srcPath := filepath.Join(templatesDir, tmpl.name)
+		data, err := fs.ReadFile(templateFS, tmpl.name)
+		if err != nil {
+			continue
+		}
 		dstPath := filepath.Join(s.memoryDir, tmpl.dest)
-
-		// Ensure destination directory exists
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 			return fmt.Errorf("create dir for %s: %w", tmpl.dest, err)
 		}
-
-		// Read template file
-		data, err := os.ReadFile(srcPath)
-		if err != nil {
-			// If template doesn't exist, skip it (not critical)
-			continue
-		}
-
-		// Write to destination
 		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
 			return fmt.Errorf("write template %s: %w", tmpl.dest, err)
 		}
 	}
-
 	return nil
 }

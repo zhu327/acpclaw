@@ -2,21 +2,23 @@ package memory_test
 
 import (
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/memory"
 )
 
 func TestService_SaveAndRead(t *testing.T) {
 	dir := t.TempDir()
-	svc, err := memory.NewService(dir, dir)
+	svc, err := memory.NewService(dir, dir, fstest.MapFS{})
 	require.NoError(t, err)
 	defer func() {
 		_ = svc.Close()
 	}()
 
-	err = svc.Save(memory.MemoryEntry{
+	err = svc.Save(domain.MemoryEntry{
 		ID:       "preferences",
 		Category: "knowledge",
 		Title:    "Preferences",

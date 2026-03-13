@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 
-	"github.com/zhu327/acpclaw/internal/agent"
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
@@ -64,10 +62,14 @@ Controls
 /status  — Show status
 /help  — Show this help`
 
+func replyBestEffort(resp domain.Replier, text string) {
+	_ = resp.Reply(domain.OutboundMessage{Text: text})
+}
+
 func (d *Dispatcher) execCommand(cmd string, msg domain.InboundMessage, resp domain.Responder) {
-	chatID, ok := parseChatID(msg.ChatID)
-	if !ok {
-		resp.Reply(domain.OutboundMessage{Text: "Invalid chat ID."}) //nolint:errcheck
+	chatID := msg.ChatID
+	if chatID == "" {
+		replyBestEffort(resp, "Invalid chat ID.")
 		return
 	}
 	args := parseCommandArgs(msg.Text)
@@ -75,10 +77,10 @@ func (d *Dispatcher) execCommand(cmd string, msg domain.InboundMessage, resp dom
 
 	switch cmd {
 	case "start":
-		resp.Reply(domain.OutboundMessage{Text: "Welcome! Use /help for available commands."}) //nolint:errcheck
+		replyBestEffort(resp, "Welcome! Use /help for available commands.")
 
 	case "help":
-		resp.Reply(domain.OutboundMessage{Text: helpText}) //nolint:errcheck
+		replyBestEffort(resp, helpText)
 
 	case "new":
 		d.handleNew(ctx, chatID, args, resp)
@@ -99,7 +101,7 @@ func (d *Dispatcher) execCommand(cmd string, msg domain.InboundMessage, resp dom
 		d.handleStatus(chatID, resp)
 
 	default:
-		resp.Reply(domain.OutboundMessage{Text: "Unknown command. Use /help."}) //nolint:errcheck
+		replyBestEffort(resp, "Unknown command. Use /help.")
 	}
 }
 
@@ -108,7 +110,7 @@ func (d *Dispatcher) ensureAgentConfigured(resp domain.Responder) bool {
 	if d.agentSvc != nil {
 		return true
 	}
-	resp.Reply(domain.OutboundMessage{Text: "Agent not configured."}) //nolint:errcheck
+	replyBestEffort(resp, "Agent not configured.")
 	return false
 }
 
@@ -117,22 +119,20 @@ func (d *Dispatcher) handleListSessionsError(resp domain.Responder, err error) b
 	if err == nil {
 		return true
 	}
-	if errors.Is(err, agent.ErrNoActiveProcess) {
-		resp.Reply(domain.OutboundMessage{Text: "No active session. Use /new first."}) //nolint:errcheck
+	if errors.Is(err, domain.ErrNoActiveProcess) {
+		replyBestEffort(resp, "No active session. Use /new first.")
 	} else {
-		resp.Reply(domain.OutboundMessage{Text: "❌ Failed to list sessions."}) //nolint:errcheck
+		replyBestEffort(resp, "❌ Failed to list sessions.")
 	}
 	return false
 }
 
-func (d *Dispatcher) replySessionStarted(resp domain.Responder, chatID int64) {
+func (d *Dispatcher) replySessionStarted(resp domain.Responder, chatID string) {
 	info := d.agentSvc.ActiveSession(chatID)
 	if info != nil {
-		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
-			Text: fmt.Sprintf("Session started: `%s` in `%s`", info.SessionID, info.Workspace),
-		})
+		replyBestEffort(resp, fmt.Sprintf("Session started: `%s` in `%s`", info.SessionID, info.Workspace))
 	} else {
-		resp.Reply(domain.OutboundMessage{Text: "Session started."}) //nolint:errcheck
+		replyBestEffort(resp, "Session started.")
 	}
 }
 
@@ -147,14 +147,13 @@ func (d *Dispatcher) resolveWorkspace(args []string) string {
 	return ws
 }
 
-func (d *Dispatcher) handleNew(ctx context.Context, chatID int64, args []string, resp domain.Responder) {
+func (d *Dispatcher) handleNew(ctx context.Context, chatID string, args []string, resp domain.Responder) {
 	if !d.ensureAgentConfigured(resp) {
 		return
 	}
-	if d.cfg.AutoSummarize && d.memorySvc != nil {
-		chatIDStr := strconv.FormatInt(chatID, 10)
-		summarizer := agent.NewAgentSummarizer(d.agentSvc, chatID)
-		if err := d.memorySvc.SummarizeSession(ctx, chatIDStr, summarizer); err != nil {
+	if d.cfg.AutoSummarize && d.memorySvc != nil && d.cfg.NewSummarizer != nil {
+		summarizer := d.cfg.NewSummarizer(chatID)
+		if err := d.memorySvc.SummarizeSession(ctx, chatID, summarizer); err != nil {
 			slog.Warn("failed to summarize session", "chat_id", chatID, "error", err)
 		}
 	}
@@ -162,13 +161,13 @@ func (d *Dispatcher) handleNew(ctx context.Context, chatID int64, args []string,
 	workspace := d.resolveWorkspace(args)
 	if err := d.agentSvc.NewSession(ctx, chatID, workspace); err != nil {
 		slog.Error("failed to start session", "chat_id", chatID, "error", err)
-		resp.Reply(domain.OutboundMessage{Text: "❌ Failed to start session."}) //nolint:errcheck
+		replyBestEffort(resp, "❌ Failed to start session.")
 		return
 	}
 	d.replySessionStarted(resp, chatID)
 }
 
-func (d *Dispatcher) handleSession(ctx context.Context, chatID int64, resp domain.Responder) {
+func (d *Dispatcher) handleSession(ctx context.Context, chatID string, resp domain.Responder) {
 	if !d.ensureAgentConfigured(resp) {
 		return
 	}
@@ -177,7 +176,7 @@ func (d *Dispatcher) handleSession(ctx context.Context, chatID int64, resp domai
 		return
 	}
 	if len(sessions) == 0 {
-		resp.Reply(domain.OutboundMessage{Text: "No sessions found."}) //nolint:errcheck
+		replyBestEffort(resp, "No sessions found.")
 		return
 	}
 	activeID := d.activeSessionID(chatID)
@@ -189,11 +188,11 @@ func (d *Dispatcher) handleSession(ctx context.Context, chatID int64, resp domai
 		}
 		lines = append(lines, fmt.Sprintf("%d. %s [%s]%s", i+1, sessionDisplayName(s), s.SessionID, marker))
 	}
-	resp.Reply(domain.OutboundMessage{Text: strings.Join(lines, "\n")}) //nolint:errcheck
+	replyBestEffort(resp, strings.Join(lines, "\n"))
 }
 
 func (d *Dispatcher) handleResume(
-	ctx context.Context, chatID int64, args []string, msg domain.InboundMessage, resp domain.Responder,
+	ctx context.Context, chatID string, args []string, msg domain.InboundMessage, resp domain.Responder,
 ) {
 	if !d.ensureAgentConfigured(resp) {
 		return
@@ -204,7 +203,7 @@ func (d *Dispatcher) handleResume(
 	}
 	filtered := filterNonActiveSessions(sessions, d.activeSessionID(chatID))
 	if len(filtered) == 0 {
-		resp.Reply(domain.OutboundMessage{Text: "No resumable sessions found."}) //nolint:errcheck
+		replyBestEffort(resp, "No resumable sessions found.")
 		return
 	}
 
@@ -236,7 +235,7 @@ func sessionDisplayName(s domain.SessionInfo) string {
 }
 
 // activeSessionID returns the current active session ID, or empty string if none.
-func (d *Dispatcher) activeSessionID(chatID int64) string {
+func (d *Dispatcher) activeSessionID(chatID string) string {
 	if active := d.agentSvc.ActiveSession(chatID); active != nil {
 		return active.SessionID
 	}
@@ -255,66 +254,65 @@ func filterNonActiveSessions(sessions []domain.SessionInfo, activeID string) []d
 
 // handleResumeByIndex handles /resume with an index.
 func (d *Dispatcher) handleResumeByIndex(
-	ctx context.Context, chatID int64, args []string, resp domain.Responder, filtered []domain.SessionInfo,
+	ctx context.Context, chatID string, args []string, resp domain.Responder, filtered []domain.SessionInfo,
 ) {
 	var n int
 	if _, err := fmt.Sscanf(args[0], "%d", &n); err != nil || n < 1 || n > len(filtered) {
-		resp.Reply(domain.OutboundMessage{Text: "Invalid session number."}) //nolint:errcheck
+		replyBestEffort(resp, "Invalid session number.")
 		return
 	}
 	s := filtered[n-1]
 	if err := d.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
-		if errors.Is(err, agent.ErrLoadSessionNotSupported) {
-			_ = resp.Reply(domain.OutboundMessage{Text: "Session resume is not supported by the current agent."})
+		if errors.Is(err, domain.ErrLoadSessionNotSupported) {
+			replyBestEffort(resp, "Session resume is not supported by the current agent.")
 			return
 		}
-		if errors.Is(err, agent.ErrSessionNotFound) {
-			resp.Reply(domain.OutboundMessage{Text: "Session expired or no longer available."}) //nolint:errcheck
+		if errors.Is(err, domain.ErrSessionNotFound) {
+			replyBestEffort(resp, "Session expired or no longer available.")
 			return
 		}
-		resp.Reply(domain.OutboundMessage{Text: "❌ Failed to resume session."}) //nolint:errcheck
+		replyBestEffort(resp, "❌ Failed to resume session.")
 		return
 	}
-	resp.Reply(domain.OutboundMessage{ //nolint:errcheck
-		Text: fmt.Sprintf("Session resumed: `%s` in `%s`", s.SessionID, s.Workspace),
-	})
+	replyBestEffort(resp, fmt.Sprintf("Session resumed: `%s` in `%s`", s.SessionID, s.Workspace))
 }
 
-func (d *Dispatcher) handleCancel(ctx context.Context, chatID int64, resp domain.Responder) {
+func (d *Dispatcher) handleCancel(ctx context.Context, chatID string, resp domain.Responder) {
 	if !d.ensureAgentConfigured(resp) {
 		return
 	}
 	if err := d.agentSvc.Cancel(ctx, chatID); err != nil {
-		if errors.Is(err, agent.ErrNoActiveSession) {
-			resp.Reply(domain.OutboundMessage{Text: "No active session. Use /new first."}) //nolint:errcheck
+		if errors.Is(err, domain.ErrNoActiveSession) {
+			replyBestEffort(resp, "No active session. Use /new first.")
 			return
 		}
-		resp.Reply(domain.OutboundMessage{Text: "❌ Failed to cancel current task."}) //nolint:errcheck
+		replyBestEffort(resp, "❌ Failed to cancel current task.")
 		return
 	}
-	resp.Reply(domain.OutboundMessage{Text: "Cancelled current operation."}) //nolint:errcheck
+	replyBestEffort(resp, "Cancelled current operation.")
 }
 
-func (d *Dispatcher) handleReconnect(ctx context.Context, chatID int64, args []string, resp domain.Responder) {
+func (d *Dispatcher) handleReconnect(ctx context.Context, chatID string, args []string, resp domain.Responder) {
 	if !d.ensureAgentConfigured(resp) {
 		return
 	}
 	workspace := d.resolveWorkspace(args)
 	if err := d.agentSvc.Reconnect(ctx, chatID, workspace); err != nil {
-		resp.Reply(domain.OutboundMessage{Text: "❌ Failed to reconnect."}) //nolint:errcheck
+		replyBestEffort(resp, "❌ Failed to reconnect.")
 		return
 	}
 	info := d.agentSvc.ActiveSession(chatID)
 	if info != nil {
-		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
-			Text: fmt.Sprintf("ACP process reconnected. New session: `%s` in `%s`", info.SessionID, info.Workspace),
-		})
+		replyBestEffort(
+			resp,
+			fmt.Sprintf("ACP process reconnected. New session: `%s` in `%s`", info.SessionID, info.Workspace),
+		)
 	} else {
-		resp.Reply(domain.OutboundMessage{Text: "ACP process reconnected."}) //nolint:errcheck
+		replyBestEffort(resp, "ACP process reconnected.")
 	}
 }
 
-func (d *Dispatcher) handleStatus(chatID int64, resp domain.Responder) {
+func (d *Dispatcher) handleStatus(chatID string, resp domain.Responder) {
 	lines := []string{"**Status**"}
 	if d.agentSvc != nil {
 		if info := d.agentSvc.ActiveSession(chatID); info != nil {
@@ -326,5 +324,5 @@ func (d *Dispatcher) handleStatus(chatID int64, resp domain.Responder) {
 	} else {
 		lines = append(lines, "- Agent not configured")
 	}
-	resp.Reply(domain.OutboundMessage{Text: strings.Join(lines, "\n")}) //nolint:errcheck
+	replyBestEffort(resp, strings.Join(lines, "\n"))
 }

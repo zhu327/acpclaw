@@ -8,16 +8,11 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 const chatContextFileName = "last-context.json"
-
-// Context stores metadata about the current chat session.
-type Context struct {
-	Channel   string    `json:"channel"`
-	ChatID    string    `json:"chatId"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
 
 // Store persists the chat context.
 type Store struct {
@@ -42,7 +37,7 @@ func (s *Store) Write(channel, chatID string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	ctx := Context{
+	ctx := domain.SessionContext{
 		Channel:   channel,
 		ChatID:    chatID,
 		UpdatedAt: time.Now(),
@@ -86,7 +81,7 @@ func (s *Store) Write(channel, chatID string) error {
 }
 
 // Read loads the most recent chat context.
-func (s *Store) Read() (*Context, error) {
+func (s *Store) Read() (*domain.SessionContext, error) {
 	data, err := os.ReadFile(s.contextFilePath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -95,7 +90,7 @@ func (s *Store) Read() (*Context, error) {
 		return nil, fmt.Errorf("read context file: %w", err)
 	}
 
-	var ctx Context
+	var ctx domain.SessionContext
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		return nil, fmt.Errorf("parse context file: %w", err)
 	}

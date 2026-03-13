@@ -9,6 +9,7 @@ import (
 	internalmcp "github.com/zhu327/acpclaw/internal/mcp"
 	"github.com/zhu327/acpclaw/internal/memory"
 	"github.com/zhu327/acpclaw/internal/session"
+	"github.com/zhu327/acpclaw/internal/templates"
 )
 
 // acpclawPaths holds the directory paths used by acpclaw.
@@ -32,7 +33,7 @@ func getAcpclawPaths() acpclawPaths {
 // On success returns (svc, cleanup, nil); callers should defer cleanup() and call
 // svc.Reindex() when needed.
 func initMemoryService(memoryDir, historyDir string) (*memory.Service, func(), error) {
-	svc, err := memory.NewService(memoryDir, historyDir)
+	svc, err := memory.NewService(memoryDir, historyDir, templates.FS)
 	if err != nil {
 		return nil, nil, err
 	}

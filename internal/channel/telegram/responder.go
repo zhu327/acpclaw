@@ -60,6 +60,7 @@ func (r *BackgroundResponder) ShowTypingIndicator() error { return nil }
 func (r *BackgroundResponder) SendActivity(block domain.ActivityBlock) error {
 	return nil
 }
+
 func (r *BackgroundResponder) ShowBusyNotification(token string, replyToMsgID int) (int, error) {
 	return 0, nil
 }

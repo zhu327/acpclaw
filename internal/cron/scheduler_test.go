@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 func TestScheduler_Trigger(t *testing.T) {
@@ -15,7 +16,7 @@ func TestScheduler_Trigger(t *testing.T) {
 	now := time.Now()
 	runAt := now.Add(-1 * time.Minute) // Should trigger immediately
 
-	job := Job{
+	job := domain.CronJob{
 		ID:      "test-1",
 		Channel: "telegram",
 		ChatID:  "123",
@@ -27,8 +28,8 @@ func TestScheduler_Trigger(t *testing.T) {
 
 	scheduler := NewScheduler(store, 10*time.Millisecond)
 
-	triggered := make(chan Job, 1)
-	scheduler.OnTrigger(func(j Job) {
+	triggered := make(chan domain.CronJob, 1)
+	scheduler.OnTrigger(func(j domain.CronJob) {
 		triggered <- j
 	})
 

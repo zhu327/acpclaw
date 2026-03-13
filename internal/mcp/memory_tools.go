@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
-	"github.com/zhu327/acpclaw/internal/memory"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 var knowledgeTopics = map[string]string{
@@ -131,7 +131,7 @@ func memorySaveHandler(
 		} else if t, ok := knowledgeTopics[id]; ok {
 			title = t
 		}
-		entry := memory.MemoryEntry{
+		entry := domain.MemoryEntry{
 			ID:       id,
 			Category: category,
 			Title:    title,
@@ -169,7 +169,7 @@ func memoryListHandler(
 	}
 }
 
-func formatEntry(e *memory.MemoryEntry) string {
+func formatEntry(e *domain.MemoryEntry) string {
 	lines := []string{
 		fmt.Sprintf("id: %s", e.ID),
 		fmt.Sprintf("title: %s", e.Title),

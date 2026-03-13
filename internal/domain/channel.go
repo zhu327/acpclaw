@@ -35,9 +35,14 @@ type ChannelPermissionRequest struct {
 // MessageHandler is the callback registered by Dispatcher on each Channel.
 type MessageHandler func(msg InboundMessage, resp Responder)
 
-// Responder encapsulates reply capabilities, bound to the IM context by the Channel.
-type Responder interface {
+// Replier is the minimal interface for sending replies.
+type Replier interface {
 	Reply(msg OutboundMessage) error
+}
+
+// Responder extends Replier with UI and notification capabilities.
+type Responder interface {
+	Replier
 	ShowPermissionUI(req ChannelPermissionRequest) error
 	ShowTypingIndicator() error
 	SendActivity(block ActivityBlock) error

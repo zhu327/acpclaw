@@ -16,7 +16,7 @@ func TestAgentService_ActiveSessionNone(t *testing.T) {
 		AgentCommand:   []string{"echo"},
 		ConnectTimeout: time.Second,
 	})
-	assert.Nil(t, svc.ActiveSession(999))
+	assert.Nil(t, svc.ActiveSession("999"))
 }
 
 func TestAgentService_Cancel_NoSession(t *testing.T) {
@@ -24,18 +24,18 @@ func TestAgentService_Cancel_NoSession(t *testing.T) {
 		AgentCommand:   []string{"echo"},
 		ConnectTimeout: time.Second,
 	})
-	err := svc.Cancel(context.Background(), 42)
-	assert.ErrorIs(t, err, agent.ErrNoActiveSession)
+	err := svc.Cancel(context.Background(), "42")
+	assert.ErrorIs(t, err, domain.ErrNoActiveSession)
 }
 
 func TestAgentService_SetHandlers(t *testing.T) {
 	svc := agent.NewAgentService(agent.ServiceConfig{AgentCommand: []string{"echo"}})
 	var activityCalled bool
-	svc.SetActivityHandler(func(chatID int64, block domain.ActivityBlock) {
+	svc.SetActivityHandler(func(chatID string, block domain.ActivityBlock) {
 		activityCalled = true
 	})
 	var permCalled bool
-	svc.SetPermissionHandler(func(chatID int64, req domain.PermissionRequest) <-chan domain.PermissionResponse {
+	svc.SetPermissionHandler(func(chatID string, req domain.PermissionRequest) <-chan domain.PermissionResponse {
 		permCalled = true
 		ch := make(chan domain.PermissionResponse, 1)
 		ch <- domain.PermissionResponse{Decision: domain.PermissionThisTime}
@@ -47,8 +47,8 @@ func TestAgentService_SetHandlers(t *testing.T) {
 
 func TestAgentService_ListSessions_NoProcess(t *testing.T) {
 	svc := agent.NewAgentService(agent.ServiceConfig{AgentCommand: []string{"echo"}})
-	sessions, err := svc.ListSessions(context.Background(), 42)
-	assert.ErrorIs(t, err, agent.ErrNoActiveProcess)
+	sessions, err := svc.ListSessions(context.Background(), "42")
+	assert.ErrorIs(t, err, domain.ErrNoActiveProcess)
 	assert.Nil(t, sessions)
 }
 

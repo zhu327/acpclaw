@@ -1,9 +1,8 @@
-package cron
+package domain
 
 import "time"
 
-// Job represents a scheduled task.
-type Job struct {
+type CronJob struct {
 	ID        string     `json:"id"`
 	Channel   string     `json:"channel"`
 	ChatID    string     `json:"chatId"`

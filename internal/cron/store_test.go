@@ -5,13 +5,14 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 func TestStore_SaveAndLoad(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
 
-	job := Job{
+	job := domain.CronJob{
 		ID:        "test-id",
 		Channel:   "telegram",
 		ChatID:    "123",

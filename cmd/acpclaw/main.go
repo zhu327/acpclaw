@@ -26,6 +26,7 @@ import (
 	"github.com/zhu327/acpclaw/internal/dispatcher"
 	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/memory"
+	"github.com/zhu327/acpclaw/internal/templates"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
 )
@@ -127,12 +128,15 @@ func run() error {
 		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
 		AllowedUsernames: cfg.Telegram.AllowedUsernames,
 		AutoSummarize:    cfg.Memory.AutoSummarize,
+		NewSummarizer: func(chatID string) domain.Summarizer {
+			return agent.NewAgentSummarizer(agentSvc, chatID)
+		},
 	}
 	disp := dispatcher.New(dispCfg)
 	disp.SetAgentService(agentSvc)
 
 	if cfg.Memory.Enabled {
-		memorySvc, err := memory.NewService(memoryDir, historyDir)
+		memorySvc, err := memory.NewService(memoryDir, historyDir, templates.FS)
 		if err != nil {
 			slog.Warn("memory service init failed", "error", err)
 		} else {
@@ -194,7 +198,7 @@ func run() error {
 		cronStore := cron.NewStore(cronDir)
 		scheduler := cron.NewScheduler(cronStore, 30*time.Second)
 
-		scheduler.OnTrigger(func(job cron.Job) {
+		scheduler.OnTrigger(func(job domain.CronJob) {
 			if job.Channel != "telegram" {
 				slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
 				return
