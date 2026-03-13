@@ -322,7 +322,7 @@ func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.Cal
 			Text:      fmt.Sprintf("Resumed session: %s\nWorkspace: %s", s.SessionID, s.Workspace),
 		})
 	}
-	sendOutbound(c.bot, chatID, domain.OutboundMessage{ //nolint:errcheck
+	sendOutboundBestEffort(c.bot, chatID, domain.OutboundMessage{
 		Text: fmt.Sprintf("Session resumed: `%s` in `%s`", s.SessionID, s.Workspace),
 	})
 	return nil
@@ -350,6 +350,13 @@ func (c *TelegramChannel) isAllowed(userID int64, username string) bool {
 
 func (c *TelegramChannel) sendPlainText(chatID int64, text string) {
 	_, _ = c.bot.SendMessage(context.TODO(), tu.Message(tu.ID(chatID), text))
+}
+
+// sendOutboundBestEffort sends an OutboundMessage; logs at debug level on failure.
+func sendOutboundBestEffort(bot *telego.Bot, chatID int64, msg domain.OutboundMessage) {
+	if err := sendOutbound(bot, chatID, msg); err != nil {
+		slog.Debug("send outbound failed (best effort)", "chat_id", chatID, "error", err)
+	}
 }
 
 // sendOutbound sends an OutboundMessage to a Telegram chat.

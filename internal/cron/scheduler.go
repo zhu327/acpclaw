@@ -9,15 +9,22 @@ import (
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
+// JobStore defines the interface required by Scheduler for polling and updating jobs.
+// Accepting an interface enables unit testing without filesystem.
+type JobStore interface {
+	ListAllJobs() ([]domain.CronJob, error)
+	UpdateJob(job domain.CronJob) error
+}
+
 // Scheduler polls and triggers cron jobs.
 type Scheduler struct {
-	store     *Store
+	store     JobStore
 	interval  time.Duration
 	onTrigger func(domain.CronJob)
 }
 
 // NewScheduler creates a new Scheduler.
-func NewScheduler(store *Store, interval time.Duration) *Scheduler {
+func NewScheduler(store JobStore, interval time.Duration) *Scheduler {
 	return &Scheduler{
 		store:    store,
 		interval: interval,
@@ -91,7 +98,14 @@ func (s *Scheduler) tick(parser robfig.Parser) {
 				continue
 			}
 			if s.onTrigger != nil {
-				go s.onTrigger(job)
+				go func(j domain.CronJob) {
+					defer func() {
+						if r := recover(); r != nil {
+							slog.Error("cron trigger panicked", "job_id", j.ID, "panic", r)
+						}
+					}()
+					s.onTrigger(j)
+				}(job)
 			}
 		}
 	}

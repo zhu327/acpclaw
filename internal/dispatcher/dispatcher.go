@@ -136,7 +136,7 @@ func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 	}
 
 	if d.agentSvc == nil {
-		resp.Reply(domain.OutboundMessage{Text: "Agent not configured."}) //nolint:errcheck
+		replyBestEffortMsg(resp, domain.OutboundMessage{Text: "Agent not configured."})
 		return
 	}
 
@@ -151,7 +151,7 @@ func (d *Dispatcher) Handle(msg domain.InboundMessage, resp domain.Responder) {
 			}
 			if err := d.agentSvc.NewSession(d.ctx, chatID, workspace); err != nil {
 				startLock.Unlock()
-				resp.Reply(domain.OutboundMessage{Text: "❌ Failed to start session."}) //nolint:errcheck
+				replyBestEffortMsg(resp, domain.OutboundMessage{Text: "❌ Failed to start session."})
 				return
 			}
 		}
@@ -189,7 +189,7 @@ func (d *Dispatcher) queueBusyPrompt(chatID string, input domain.PromptInput, re
 	d.pendingMu.Unlock()
 
 	if old != nil && old.notifyMsgID != 0 {
-		resp.ClearBusyNotification(old.notifyMsgID) //nolint:errcheck
+		bestEffort(func() error { return resp.ClearBusyNotification(old.notifyMsgID) })
 	}
 	if notifyID, err := resp.ShowBusyNotification(token, replyToMsgID); err == nil {
 		d.pendingMu.Lock()
@@ -224,7 +224,7 @@ func (d *Dispatcher) runPromptLoop(
 		if p == nil {
 			return
 		}
-		resp.ClearBusyNotification(p.notifyMsgID) //nolint:errcheck
+		bestEffort(func() error { return resp.ClearBusyNotification(p.notifyMsgID) })
 		input = p.input
 	}
 }
@@ -261,21 +261,21 @@ func (d *Dispatcher) hasReplyContent(reply *domain.AgentReply) bool {
 func (d *Dispatcher) sendPromptError(chatID string, resp domain.Responder, err error) {
 	switch {
 	case errors.Is(err, domain.ErrAgentOutputLimitExceeded):
-		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
+		replyBestEffortMsg(resp, domain.OutboundMessage{
 			Text: "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` (or `ACP_STDIO_LIMIT`).",
 		})
 	case errors.Is(err, domain.ErrNoActiveSession):
-		resp.Reply(domain.OutboundMessage{ //nolint:errcheck
+		replyBestEffortMsg(resp, domain.OutboundMessage{
 			Text: "No active session. Send a message again or use /new [workspace].",
 		})
 	default:
 		slog.Error("prompt failed", "chat_id", chatID, "error", err)
-		resp.Reply(domain.OutboundMessage{Text: "❌ Failed to process your request."}) //nolint:errcheck
+		replyBestEffortMsg(resp, domain.OutboundMessage{Text: "❌ Failed to process your request."})
 	}
 }
 
 func (d *Dispatcher) sendReply(resp domain.Responder, reply *domain.AgentReply) {
-	resp.Reply(domain.OutboundMessage{ //nolint:errcheck
+	replyBestEffortMsg(resp, domain.OutboundMessage{
 		Text:   reply.Text,
 		Images: reply.Images,
 		Files:  reply.Files,
@@ -329,11 +329,13 @@ func (d *Dispatcher) setupCallbacks() {
 
 		if v, ok := d.activeResponders.Load(chatID); ok {
 			resp := v.(domain.Responder)
-			resp.ShowPermissionUI(domain.ChannelPermissionRequest{ //nolint:errcheck
-				ID:               req.ID,
-				Tool:             req.Tool,
-				Description:      req.Description,
-				AvailableActions: permDecisionsToStrings(req.AvailableActions),
+			bestEffort(func() error {
+				return resp.ShowPermissionUI(domain.ChannelPermissionRequest{
+					ID:               req.ID,
+					Tool:             req.Tool,
+					Description:      req.Description,
+					AvailableActions: permDecisionsToStrings(req.AvailableActions),
+				})
 			})
 		}
 		return ch
@@ -348,7 +350,7 @@ func (d *Dispatcher) setupCallbacks() {
 			}
 			b := block
 			b.Workspace = workspace
-			resp.SendActivity(b) //nolint:errcheck
+			bestEffort(func() error { return resp.SendActivity(b) })
 		}
 	})
 }

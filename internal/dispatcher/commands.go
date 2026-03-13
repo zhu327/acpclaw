@@ -62,8 +62,23 @@ Controls
 /status  — Show status
 /help  — Show this help`
 
+// replyBestEffort sends a text reply; logs at debug level on failure (best-effort delivery).
 func replyBestEffort(resp domain.Replier, text string) {
-	_ = resp.Reply(domain.OutboundMessage{Text: text})
+	replyBestEffortMsg(resp, domain.OutboundMessage{Text: text})
+}
+
+// replyBestEffortMsg sends an OutboundMessage; logs at debug level on failure.
+func replyBestEffortMsg(resp domain.Replier, msg domain.OutboundMessage) {
+	if err := resp.Reply(msg); err != nil {
+		slog.Debug("reply failed (best effort)", "error", err)
+	}
+}
+
+// bestEffort runs fn and logs at debug level on error (for non-critical operations).
+func bestEffort(fn func() error) {
+	if err := fn(); err != nil {
+		slog.Debug("best-effort operation failed", "error", err)
+	}
 }
 
 func (d *Dispatcher) execCommand(cmd string, msg domain.InboundMessage, resp domain.Responder) {
@@ -221,7 +236,7 @@ func (d *Dispatcher) handleResume(
 	for i, s := range filtered {
 		choices[i] = domain.SessionChoice{Index: i, DisplayName: sessionDisplayName(s)}
 	}
-	resp.ShowResumeKeyboard(choices) //nolint:errcheck
+	bestEffort(func() error { return resp.ShowResumeKeyboard(choices) })
 }
 
 func sessionDisplayName(s domain.SessionInfo) string {
