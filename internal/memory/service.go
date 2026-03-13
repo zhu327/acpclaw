@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,6 +143,7 @@ func (s *Service) SummarizeSession(ctx context.Context, chatID string, summarize
 		Content:  summary,
 		Date:     time.Now().Format("2006-01-02"),
 	}
+	// Do not MarkSummarized on failure; next run will retry the same content.
 	if err := s.Save(entry); err != nil {
 		return fmt.Errorf("save episode: %w", err)
 	}
@@ -168,6 +170,25 @@ func buildEpisodeFileName(chatID string) string {
 // Reindex rebuilds the SQLite index from Markdown files on disk.
 func (s *Service) Reindex() error {
 	return s.store.Reindex(s.memoryDir)
+}
+
+const reindexInterval = 5 * time.Minute
+
+// StartPeriodicReindex blocks until ctx is done, reindexing every reindexInterval.
+// Run via errgroup: g.Go(func() error { svc.StartPeriodicReindex(gCtx); return nil })
+func (s *Service) StartPeriodicReindex(ctx context.Context) {
+	ticker := time.NewTicker(reindexInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.Reindex(); err != nil {
+				slog.Warn("periodic reindex failed", "error", err)
+			}
+		}
+	}
 }
 
 // --- helpers ---

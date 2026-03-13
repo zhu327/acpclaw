@@ -93,13 +93,63 @@ func (s *Store) Get(id string) (*domain.MemoryEntry, error) {
 }
 
 // Search performs FTS5 full-text search with optional category filter.
-// CJK characters are expanded to OR tokens for better matching.
+// Two-pass strategy (aligned with NeoClaw):
+// - Pass 1: exact FTS match (AND logic)
+// - Pass 2: if results < limit and query contains CJK, re-search with OR-expanded CJK tokens
 func (s *Store) Search(query, category string, limit int) ([]domain.MemoryEntry, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	ftsQuery := buildCjkOrQuery(query)
-	return s.ftsSearch(ftsQuery, category, limit)
+
+	// Pass 1: exact match; on FTS syntax error (e.g. special chars in query), return empty to match NeoClaw
+	results, err := s.ftsSearch(query, category, limit)
+	if err != nil {
+		if isFtsSyntaxError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// Pass 2: CJK OR fallback when exact match returns too few and query has CJK
+	if more := s.searchCjkFallback(results, query, category, limit); more != nil {
+		results = appendDeduplicated(results, more)
+	}
+	return results, nil
+}
+
+// searchCjkFallback runs OR-expanded CJK search when pass 1 returned fewer than limit results.
+// Returns nil if fallback is skipped or fails (caller keeps pass 1 results).
+func (s *Store) searchCjkFallback(
+	existing []domain.MemoryEntry,
+	query, category string,
+	limit int,
+) []domain.MemoryEntry {
+	if len(existing) >= limit || !cjkRe.MatchString(query) {
+		return nil
+	}
+	orQuery := buildCjkOrQuery(query)
+	if orQuery == query {
+		return nil
+	}
+	more, err := s.ftsSearch(orQuery, category, limit-len(existing))
+	if err != nil {
+		return nil
+	}
+	return more
+}
+
+func appendDeduplicated(a, b []domain.MemoryEntry) []domain.MemoryEntry {
+	seen := make(map[string]bool)
+	for _, r := range a {
+		seen[r.ID] = true
+	}
+	for _, r := range b {
+		if !seen[r.ID] {
+			a = append(a, r)
+			seen[r.ID] = true
+		}
+	}
+	return a
 }
 
 func (s *Store) ftsSearch(ftsQuery, category string, limit int) ([]domain.MemoryEntry, error) {
@@ -165,8 +215,14 @@ func (s *Store) Delete(id string) error {
 }
 
 // Reindex rebuilds the index from Markdown files in memoryDir.
-// It scans: <memoryDir>/SOUL.md, <memoryDir>/knowledge/*.md, <memoryDir>/episode/*.md
+// It first clears all existing records, then scans: <memoryDir>/SOUL.md,
+// <memoryDir>/knowledge/*.md, <memoryDir>/episode/*.md
 func (s *Store) Reindex(memoryDir string) error {
+	// Clear first, then rebuild; aligns with NeoClaw to avoid orphan records from deleted files.
+	if _, err := s.db.Exec("DELETE FROM memory"); err != nil {
+		return fmt.Errorf("clear memory table: %w", err)
+	}
+
 	// identity: SOUL.md
 	soulPath := filepath.Join(memoryDir, "SOUL.md")
 	if data, err := os.ReadFile(soulPath); err == nil {
@@ -214,6 +270,22 @@ func (s *Store) reindexDir(memoryDir, category string) error {
 }
 
 // --- helpers ---
+
+var ftsSyntaxErrorSubstrings = []string{"fts5", "syntax", "malformed"}
+
+// isFtsSyntaxError returns true if err appears to be an FTS5 query syntax error.
+func isFtsSyntaxError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, sub := range ftsSyntaxErrorSubstrings {
+		if strings.Contains(msg, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 func scanEntry(row *sql.Row) (*domain.MemoryEntry, error) {
 	var e domain.MemoryEntry

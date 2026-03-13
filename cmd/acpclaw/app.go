@@ -82,6 +82,12 @@ func SetupApp(cfg *config.Config, echoMode bool) (*App, error) {
 	tgChannel := buildTelegramChannel(cfg, bot, updates, disp)
 	g, gCtx := errgroup.WithContext(ctx)
 
+	if memorySvc != nil {
+		g.Go(func() error {
+			memorySvc.StartPeriodicReindex(gCtx)
+			return nil
+		})
+	}
 	if cfg.Cron.Enabled {
 		setupCron(g, gCtx, cronDir, disp, bot)
 		slog.Info("cron scheduler started", "dir", cronDir)
