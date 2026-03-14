@@ -81,6 +81,36 @@ cmd/acpclaw/main.go
 - `builtin/` implements `domain/` hook interfaces, registers into `framework/`
 - `cmd/` assembles: creates Framework → registers BuiltinPlugin → starts
 
+## ChatRef
+
+Defined in `domain/types.go`. Bundles channel and chat identity into a single type, used throughout all interfaces instead of bare `chatID string`:
+
+```go
+type ChatRef struct {
+    ChannelKind string
+    ChatID      string
+}
+
+func (r ChatRef) CompositeKey() string {
+    return r.ChannelKind + ":" + r.ChatID
+}
+```
+
+`InboundMessage` embeds `ChatRef`:
+
+```go
+type InboundMessage struct {
+    ChatRef
+    ID          string
+    Text        string
+    AuthorID    string
+    AuthorName  string
+    Attachments []Attachment
+}
+```
+
+All domain interfaces (`SessionManager`, `Prompter`, `PermissionHandler`, `ActivityObserver`), hook interfaces, and Framework methods use `ChatRef` instead of `chatID string`. Internal maps use `ChatRef.CompositeKey()` as the map key.
+
 ## Hook Interfaces
 
 All hook interfaces defined in `domain/hooks.go`. Framework uses type assertion to detect which interfaces a plugin implements.
@@ -153,13 +183,13 @@ type CommandProvider interface {
 // BusyHandler handles the "send now" callback when a chat is busy.
 // CallFirst semantics.
 type BusyHandler interface {
-    HandleBusySendNow(chatID string, token string) (ok bool, err error)
+    HandleBusySendNow(chat ChatRef, token string) (ok bool, err error)
 }
 
 // ResumeHandler handles session resume choice callbacks.
 // CallFirst semantics.
 type ResumeHandler interface {
-    ResolveResumeChoice(ctx context.Context, chatID string, sessionIndex int) (*SessionInfo, error)
+    ResolveResumeChoice(ctx context.Context, chat ChatRef, sessionIndex int) (*SessionInfo, error)
 }
 ```
 
@@ -200,6 +230,7 @@ type Result struct {
 }
 
 type TurnContext struct {
+    Chat      domain.ChatRef
     SessionID string
     Message   domain.InboundMessage
     Responder domain.Responder
@@ -234,15 +265,15 @@ Internally iterates `plugins`, performs type assertion (`if h, ok := p.(T); ok`)
 
 ```go
 type permEntry struct {
-    ch     chan domain.PermissionResponse
-    chatID string
+    ch   chan domain.PermissionResponse
+    chat domain.ChatRef
 }
 
 type Framework struct {
     registry     *HookRegistry
     channels     map[string]domain.Channel
     commands     map[string]domain.Command
-    responders   sync.Map // chatID → domain.Responder (active turn responders)
+    responders   sync.Map // compositeKey → domain.Responder (active turn responders)
     pendingPerms sync.Map // reqID → permEntry (pending permission requests)
 }
 
@@ -251,16 +282,16 @@ func (f *Framework) Register(p Plugin)
 func (f *Framework) Init() error    // collects channels and commands from providers
 func (f *Framework) Start(ctx context.Context) error  // starts channels, blocks
 
-// GetResponder returns the active Responder for a chatID, or nil if no turn is active.
-// Used by permission and activity handlers to send UI updates during a turn.
-func (f *Framework) GetResponder(chatID string) domain.Responder
+// GetResponder returns the active Responder for a chat, or nil if no turn is active.
+// Uses chat.CompositeKey() for internal map lookup.
+func (f *Framework) GetResponder(chat domain.ChatRef) domain.Responder
 
 // Callback entry points for channels.
 // Channels are responsible for converting channel-specific types (e.g. callback
 // data strings "always"/"once"/"deny") to domain types before calling these methods.
 func (f *Framework) RespondPermission(reqID string, decision domain.PermissionDecision)
-func (f *Framework) HandleBusySendNow(chatID string, token string) (ok bool, err error)
-func (f *Framework) ResolveResumeChoice(ctx context.Context, chatID string, sessionIndex int) (*domain.SessionInfo, error)
+func (f *Framework) HandleBusySendNow(chat domain.ChatRef, token string) (ok bool, err error)
+func (f *Framework) ResolveResumeChoice(ctx context.Context, chat domain.ChatRef, sessionIndex int) (*domain.SessionInfo, error)
 ```
 
 ### ProcessInbound Pipeline
@@ -268,8 +299,9 @@ func (f *Framework) ResolveResumeChoice(ctx context.Context, chatID string, sess
 ```go
 func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessage, resp domain.Responder) error {
     // Register responder for permission/activity handlers to find
-    f.responders.Store(msg.ChatID, resp)
-    defer f.responders.Delete(msg.ChatID)
+    key := msg.ChatRef.CompositeKey()
+    f.responders.Store(key, resp)
+    defer f.responders.Delete(key)
 
     // 1. ResolveSession — CallFirst[SessionResolver]
     //    If all resolvers return empty, the builtin resolver auto-creates a new
@@ -351,24 +383,17 @@ type Responder interface {
 
 ### Channel Identification and Composite Key
 
-`InboundMessage.ChannelKind` is the explicit channel identifier. `ChatID` stays as a pure, channel-local ID (e.g. `"12345"`, not `"telegram:12345"`):
+`InboundMessage` embeds `ChatRef`, providing explicit `ChannelKind` and `ChatID` fields. `ChatID` is a pure, channel-local ID (e.g. `"12345"`, not `"telegram:12345"`):
 
 ```go
 msg := domain.InboundMessage{
-    ChatID:      strconv.FormatInt(tgMsg.Chat.ID, 10),
-    ChannelKind: "telegram",
+    ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: strconv.FormatInt(tgMsg.Chat.ID, 10)},
 }
 ```
 
-When a globally unique key is needed (map lookups, history paths, session resolution), the Framework constructs a composite key internally via a helper:
+When a globally unique key is needed (map lookups, history paths, session resolution), `ChatRef.CompositeKey()` is used. This is an internal concern of the Framework and storage layers.
 
-```go
-func CompositeKey(channelKind, chatID string) string {
-    return channelKind + ":" + chatID
-}
-```
-
-Hooks and commands receive the `InboundMessage` with both fields available. They use `ChatID` for channel-local operations (e.g. Telegram API calls) and `ChannelKind` for channel-aware logic. The composite key is an internal concern of the Framework and storage layers — it is not exposed on `InboundMessage`.
+Hooks and commands access both fields via `InboundMessage.ChatRef` (or directly via promoted fields `msg.ChannelKind`, `msg.ChatID`). They use `ChatID` for channel-local operations (e.g. Telegram API calls) and `ChannelKind` for channel-aware logic.
 
 ### Callback Decoupling
 
@@ -383,9 +408,9 @@ Channels route callbacks through Framework methods instead of directly calling D
 Permission requests flow through a pending request registry in the Framework:
 
 1. During `ActionExecutor`, the agent's `PermissionHandler` is called with a permission request
-2. The handler stores a `permEntry{ch, chatID}` in `Framework.pendingPerms` keyed by `reqID`, and sends permission UI to the user via `Framework.GetResponder(chatID).ShowPermissionUI()`
+2. The handler stores a `permEntry{ch, chat}` in `Framework.pendingPerms` keyed by `reqID`, and sends permission UI to the user via `Framework.GetResponder(chat).ShowPermissionUI()`
 3. When the user responds, the channel maps the callback string to `domain.PermissionDecision` and calls `Framework.RespondPermission(reqID, decision)`
-4. Framework looks up the `permEntry` by `reqID`, sends the decision on the channel, and removes the entry. If the decision is `PermissionAlways`, Framework also calls `PermissionHandler.SetSessionPermissionMode(chatID, PermissionModeApprove)` using the `chatID` from the stored entry.
+4. Framework looks up the `permEntry` by `reqID`, sends the decision on the channel, and removes the entry. If the decision is `PermissionAlways`, Framework also calls `PermissionHandler.SetSessionPermissionMode(chat, PermissionModeApprove)` using the `ChatRef` from the stored entry.
 5. Pending entries expire after 5 minutes (consistent with current behavior). A background goroutine or lazy cleanup on access removes stale entries.
 
 ### Plugin Initialization
@@ -402,9 +427,9 @@ BuiltinPlugin implements `PluginInitializer` to store the Framework reference, w
 
 ### Activity and Responder Wiring
 
-The Framework maintains a `responders` map (`sync.Map` of `chatID → Responder`). At the start of `ProcessInbound`, the current responder is stored; at the end it is removed.
+The Framework maintains a `responders` map (`sync.Map` of `compositeKey → Responder`). At the start of `ProcessInbound`, the current responder is stored using `chat.CompositeKey()`; at the end it is removed.
 
-Permission and activity handlers registered on the agent service use `Framework.GetResponder(chatID)` to find the active responder for sending permission UI and activity updates. If no turn is active (responder is nil), updates are dropped.
+Permission and activity handlers registered on the agent service use `Framework.GetResponder(chat)` to find the active responder for sending permission UI and activity updates. If no turn is active (responder is nil), updates are dropped.
 
 ### Allowlist
 
@@ -468,16 +493,34 @@ This state lives in the BuiltinPlugin (not in Framework), since it is implementa
 
 ### Agent Interface Split
 
-Current `AgentService` splits into:
+Current `AgentService` splits into smaller interfaces. All methods that previously took `chatID string` now take `ChatRef`:
 
-| Interface | Methods |
-|---|---|
-| `SessionManager` | `NewSession`, `LoadSession`, `ListSessions`, `ActiveSession`, `Reconnect`, `Shutdown` |
-| `Prompter` | `Prompt`, `Cancel` |
-| `PermissionHandler` | `SetPermissionHandler`, `SetSessionPermissionMode` |
-| `ActivityObserver` | `SetActivityHandler` |
+```go
+type SessionManager interface {
+    NewSession(ctx context.Context, chat ChatRef, workspace string) error
+    LoadSession(ctx context.Context, chat ChatRef, sessionID, workspace string) error
+    ListSessions(ctx context.Context, chat ChatRef) ([]SessionInfo, error)
+    ActiveSession(chat ChatRef) *SessionInfo
+    Reconnect(ctx context.Context, chat ChatRef, workspace string) error
+    Shutdown()
+}
 
-The concrete `AgentServiceImpl` in `builtin/agent/` implements all four interfaces. Consumers receive only the interface they need.
+type Prompter interface {
+    Prompt(ctx context.Context, chat ChatRef, input PromptInput) (*AgentReply, error)
+    Cancel(ctx context.Context, chat ChatRef) error
+}
+
+type PermissionHandler interface {
+    SetPermissionHandler(fn func(chat ChatRef, req PermissionRequest) <-chan PermissionResponse)
+    SetSessionPermissionMode(chat ChatRef, mode PermissionMode)
+}
+
+type ActivityObserver interface {
+    SetActivityHandler(fn func(chat ChatRef, block ActivityBlock))
+}
+```
+
+The concrete `AgentServiceImpl` in `builtin/agent/` implements all four interfaces. Internally it uses `chat.CompositeKey()` for its per-chat maps. Consumers receive only the interface they need.
 
 ### Dispatcher Elimination
 
@@ -498,8 +541,10 @@ Six phases; the project compiles and runs after each phase.
 ### Phase 1: Skeleton
 
 - Create `internal/framework/`: `Framework`, `HookRegistry`, turn types
+- Add `domain/types.go`: `ChatRef` type with `CompositeKey()` method
 - Add `domain/hooks.go` (all hook interfaces), `domain/command.go` (Command interface)
-- Split `domain/agent.go`: `AgentService` → `SessionManager` + `Prompter` + `PermissionHandler` + `ActivityObserver`
+- Split `domain/agent.go`: `AgentService` → `SessionManager` + `Prompter` + `PermissionHandler` + `ActivityObserver`, all using `ChatRef`
+- Update `InboundMessage` to embed `ChatRef` (remove standalone `ChannelKind` field)
 - No changes to existing runtime; new code only
 
 ### Phase 2: Channel Layer
