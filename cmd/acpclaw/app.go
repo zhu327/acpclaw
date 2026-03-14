@@ -126,7 +126,7 @@ func buildAgentService(
 		MCPServers: []acpsdk.McpServer{
 			{
 				Stdio: &acpsdk.McpServerStdio{
-					Name:    "acpclaw-memory",
+					Name:    "acpclaw-tools",
 					Command: exe,
 					Args:    []string{"mcp"},
 				},
