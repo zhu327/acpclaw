@@ -22,3 +22,15 @@ type Attachment struct {
 	MediaType string // "image", "file", "audio"
 	FileName  string
 }
+
+// ChatRef bundles channel kind and chat ID into a single type.
+// Used throughout all interfaces instead of bare chatID string.
+type ChatRef struct {
+	ChannelKind string
+	ChatID      string
+}
+
+// CompositeKey returns a globally unique key for map lookups and storage paths.
+func (r ChatRef) CompositeKey() string {
+	return r.ChannelKind + ":" + r.ChatID
+}
