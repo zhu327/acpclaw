@@ -19,11 +19,12 @@ type ChannelConfig struct {
 	AllowedUsernames []string
 }
 
-// CallbackHandlers holds Dispatcher callback functions for Channel events.
-type CallbackHandlers struct {
-	OnPermission   func(reqID string, decision string)
-	OnBusySendNow  func(chatID string, token string) (ok bool, err error)
-	OnResumeChoice func(ctx context.Context, chatID string, index int) (*domain.SessionInfo, error)
+// FrameworkCallbacks is the interface for Framework callback handling.
+// Implemented by *framework.Framework; channel uses it for permission, busy, resume.
+type FrameworkCallbacks interface {
+	RespondPermission(reqID string, decision domain.PermissionDecision)
+	HandleBusySendNow(chat domain.ChatRef, token string) (bool, error)
+	ResolveResumeChoice(ctx context.Context, chat domain.ChatRef, sessionIndex int) (*domain.SessionInfo, error)
 }
 
 // TelegramChannel implements domain.Channel for the Telegram platform.
@@ -32,7 +33,7 @@ type TelegramChannel struct {
 	handler          *th.BotHandler
 	cfg              ChannelConfig
 	updates          <-chan telego.Update
-	callbacks        CallbackHandlers
+	callbacks        FrameworkCallbacks
 	allowlistChecker domain.AllowlistChecker
 }
 
@@ -43,7 +44,7 @@ func NewTelegramChannel(
 	bot *telego.Bot,
 	updates <-chan telego.Update,
 	cfg ChannelConfig,
-	callbacks CallbackHandlers,
+	callbacks FrameworkCallbacks,
 	allowlistChecker domain.AllowlistChecker,
 ) *TelegramChannel {
 	return &TelegramChannel{
@@ -188,10 +189,11 @@ func (c *TelegramChannel) handlePermissionCallback(ctx *th.Context, query telego
 	}
 
 	reqID := parts[1]
-	decision := parts[2]
+	decisionStr := parts[2]
 
-	if c.callbacks.OnPermission != nil {
-		c.callbacks.OnPermission(reqID, decision)
+	decision := mapCallbackToPermissionDecision(decisionStr)
+	if c.callbacks != nil {
+		c.callbacks.RespondPermission(reqID, decision)
 	}
 
 	labels := map[string]string{
@@ -199,7 +201,7 @@ func (c *TelegramChannel) handlePermissionCallback(ctx *th.Context, query telego
 		"once":   "Approved this time.",
 		"deny":   "Denied.",
 	}
-	label := labels[decision]
+	label := labels[decisionStr]
 	if label == "" {
 		label = "Request expired."
 	}
@@ -221,6 +223,26 @@ func (c *TelegramChannel) handlePermissionCallback(ctx *th.Context, query telego
 	return nil
 }
 
+func mapCallbackToPermissionDecision(s string) domain.PermissionDecision {
+	switch s {
+	case "always":
+		return domain.PermissionAlways
+	case "once":
+		return domain.PermissionThisTime
+	case "deny":
+		return domain.PermissionDeny
+	default:
+		return domain.PermissionDeny
+	}
+}
+
+func chatRefFromTelegramID(chatID int64) domain.ChatRef {
+	return domain.ChatRef{
+		ChannelKind: "telegram",
+		ChatID:      "telegram:" + strconv.FormatInt(chatID, 10),
+	}
+}
+
 func (c *TelegramChannel) handleBusyCallback(ctx *th.Context, query telego.CallbackQuery) error {
 	if !c.checkCallbackAccess(query) {
 		return nil
@@ -228,13 +250,13 @@ func (c *TelegramChannel) handleBusyCallback(ctx *th.Context, query telego.Callb
 
 	token := strings.TrimPrefix(query.Data, "busy|")
 	chatID := getChatIDFromQuery(query)
-	compositeID := toCompositeChatID(chatID)
+	chat := chatRefFromTelegramID(chatID)
 
-	if c.callbacks.OnBusySendNow == nil {
+	if c.callbacks == nil {
 		c.answerCallback(query, "Already sent.")
 		return nil
 	}
-	ok, err := c.callbacks.OnBusySendNow(compositeID, token)
+	ok, err := c.callbacks.HandleBusySendNow(chat, token)
 	if err != nil {
 		c.answerCallback(query, "Cancel failed.")
 		c.clearCallbackReplyMarkup(ctx.Context(), query)
@@ -275,14 +297,14 @@ func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.Cal
 	}
 
 	chatID := getChatIDFromQuery(query)
-	compositeID := toCompositeChatID(chatID)
+	chat := chatRefFromTelegramID(chatID)
 
-	if c.callbacks.OnResumeChoice == nil {
+	if c.callbacks == nil {
 		c.answerCallback(query, "Selection expired.")
 		return nil
 	}
 
-	s, err := c.callbacks.OnResumeChoice(ctx.Context(), compositeID, index)
+	s, err := c.callbacks.ResolveResumeChoice(ctx.Context(), chat, index)
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "expired") {
