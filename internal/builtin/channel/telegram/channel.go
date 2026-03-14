@@ -130,7 +130,7 @@ func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) do
 	}
 
 	inbound := domain.InboundMessage{
-		ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: "telegram:" + strconv.FormatInt(msg.Chat.ID, 10)},
+		ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: strconv.FormatInt(msg.Chat.ID, 10)},
 		ID:      strconv.Itoa(msg.MessageID),
 		Text:    text,
 	}
@@ -239,7 +239,7 @@ func mapCallbackToPermissionDecision(s string) domain.PermissionDecision {
 func chatRefFromTelegramID(chatID int64) domain.ChatRef {
 	return domain.ChatRef{
 		ChannelKind: "telegram",
-		ChatID:      "telegram:" + strconv.FormatInt(chatID, 10),
+		ChatID:      strconv.FormatInt(chatID, 10),
 	}
 }
 

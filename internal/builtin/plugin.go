@@ -25,13 +25,14 @@ import (
 
 // BuiltinPlugin provides the default implementation of all framework hooks.
 type BuiltinPlugin struct {
-	cfg        *config.Config
-	echo       bool
-	fw         *framework.Framework
-	agentSvc   domain.AgentService
-	tgChannel  *telegram.TelegramChannel
+	cfg         *config.Config
+	echo        bool
+	fw          *framework.Framework
+	agentSvc    domain.AgentService
+	tgChannel   *telegram.TelegramChannel
 	adapter     *commands.AgentAdapter
 	resumeStore commands.ResumeChoicesStore
+	executor    *promptExecutor
 }
 
 // NewPlugin creates a new BuiltinPlugin.
@@ -52,8 +53,14 @@ func (b *BuiltinPlugin) Init(fw any) error {
 	b.buildAgentService()
 	b.adapter = commands.NewAgentAdapter(b.agentSvc)
 	b.resumeStore = commands.NewResumeChoicesStore()
+	b.executor = newPromptExecutor(b.agentSvc, f, b.buildFirstPromptPrefix)
 	b.wireAgentCallbacks()
 	return nil
+}
+
+func (b *BuiltinPlugin) buildFirstPromptPrefix(chatID string) string {
+	// Memory context will be added in Phase 5
+	return buildSessionInfoBlock(chatID, "telegram")
 }
 
 func (b *BuiltinPlugin) wireAgentCallbacks() {
@@ -188,12 +195,24 @@ func (b *BuiltinPlugin) ExecuteAction(ctx context.Context, action domain.Action,
 	if action.Kind != domain.ActionPrompt {
 		return nil, nil
 	}
-	chatID := tc.Chat.CompositeKey()
-	reply, err := b.agentSvc.Prompt(ctx, chatID, action.Input)
-	if err != nil {
-		return nil, err
+	if b.agentSvc == nil {
+		return &domain.Result{Text: "Agent not configured."}, nil
 	}
-	return &domain.Result{Reply: reply}, nil
+	result := b.executor.executePrompt(ctx, action, tc)
+	return result, nil
+}
+
+// HandleBusySendNow implements domain.BusyHandler.
+func (b *BuiltinPlugin) HandleBusySendNow(chat domain.ChatRef, token string) (bool, error) {
+	if b.executor == nil {
+		return false, nil
+	}
+	return b.executor.HandleBusySendNow(chat, token)
+}
+
+// OnError implements domain.ErrorObserver.
+func (b *BuiltinPlugin) OnError(ctx context.Context, stage string, err error, msg domain.InboundMessage) {
+	slog.Error("turn error", "stage", stage, "chat", msg.ChatRef.CompositeKey(), "error", err)
 }
 
 // RenderOutbound implements domain.OutboundRenderer.
