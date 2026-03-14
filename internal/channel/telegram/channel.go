@@ -22,8 +22,8 @@ type ChannelConfig struct {
 // CallbackHandlers holds Dispatcher callback functions for Channel events.
 type CallbackHandlers struct {
 	OnPermission   func(reqID string, decision string)
-	OnBusySendNow  func(chatID int64, token string) (ok bool, err error)
-	OnResumeChoice func(ctx context.Context, chatID int64, index int) (*domain.SessionInfo, error)
+	OnBusySendNow  func(chatID string, token string) (ok bool, err error)
+	OnResumeChoice func(ctx context.Context, chatID string, index int) (*domain.SessionInfo, error)
 }
 
 // TelegramChannel implements domain.Channel for the Telegram platform.
@@ -109,8 +109,13 @@ func (c *TelegramChannel) Stop() error {
 }
 
 // Send sends an OutboundMessage to the given chatID.
+// chatID may be a composite key like "telegram:12345"; the prefix is stripped.
 func (c *TelegramChannel) Send(chatID string, msg domain.OutboundMessage) error {
-	id, err := strconv.ParseInt(chatID, 10, 64)
+	raw := chatID
+	if _, after, ok := strings.Cut(chatID, ":"); ok {
+		raw = after
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid chatID %q: %w", chatID, err)
 	}
@@ -125,7 +130,7 @@ func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) do
 
 	inbound := domain.InboundMessage{
 		ID:          strconv.Itoa(msg.MessageID),
-		ChatID:      strconv.FormatInt(msg.Chat.ID, 10),
+		ChatID:      "telegram:" + strconv.FormatInt(msg.Chat.ID, 10),
 		Text:        text,
 		ChannelKind: "telegram",
 	}
@@ -175,15 +180,11 @@ func (c *TelegramChannel) downloadFile(ctx context.Context, fileID string) ([]by
 }
 
 func (c *TelegramChannel) handlePermissionCallback(ctx *th.Context, query telego.CallbackQuery) error {
-	if !strings.HasPrefix(query.Data, "perm|") {
-		return nil
-	}
 	parts := strings.SplitN(query.Data, "|", 3)
 	if len(parts) != 3 {
 		return nil
 	}
-	if query.From.ID == 0 || !c.isAllowed(query.From.ID, query.From.Username) {
-		c.answerCallback(query, "Access denied.")
+	if !c.checkCallbackAccess(query) {
 		return nil
 	}
 
@@ -222,42 +223,27 @@ func (c *TelegramChannel) handlePermissionCallback(ctx *th.Context, query telego
 }
 
 func (c *TelegramChannel) handleBusyCallback(ctx *th.Context, query telego.CallbackQuery) error {
-	if !strings.HasPrefix(query.Data, "busy|") {
-		return nil
-	}
-	if query.From.ID == 0 || !c.isAllowed(query.From.ID, query.From.Username) {
-		c.answerCallback(query, "Access denied.")
+	if !c.checkCallbackAccess(query) {
 		return nil
 	}
 
 	token := strings.TrimPrefix(query.Data, "busy|")
 	chatID := getChatIDFromQuery(query)
+	compositeID := toCompositeChatID(chatID)
 
 	if c.callbacks.OnBusySendNow == nil {
 		c.answerCallback(query, "Already sent.")
 		return nil
 	}
-	ok, err := c.callbacks.OnBusySendNow(chatID, token)
+	ok, err := c.callbacks.OnBusySendNow(compositeID, token)
 	if err != nil {
 		c.answerCallback(query, "Cancel failed.")
-		if query.Message != nil {
-			_, _ = c.bot.EditMessageReplyMarkup(ctx.Context(), &telego.EditMessageReplyMarkupParams{
-				ChatID:      tu.ID(chatID),
-				MessageID:   query.Message.GetMessageID(),
-				ReplyMarkup: tu.InlineKeyboard(),
-			})
-		}
+		c.clearCallbackReplyMarkup(ctx.Context(), query)
 		return nil
 	}
 	if !ok {
 		c.answerCallback(query, "Already sent.")
-		if query.Message != nil {
-			_, _ = c.bot.EditMessageReplyMarkup(ctx.Context(), &telego.EditMessageReplyMarkupParams{
-				ChatID:      tu.ID(chatID),
-				MessageID:   query.Message.GetMessageID(),
-				ReplyMarkup: tu.InlineKeyboard(),
-			})
-		}
+		c.clearCallbackReplyMarkup(ctx.Context(), query)
 		return nil
 	}
 
@@ -279,11 +265,7 @@ func (c *TelegramChannel) handleBusyCallback(ctx *th.Context, query telego.Callb
 }
 
 func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.CallbackQuery) error {
-	if !strings.HasPrefix(query.Data, "resume|") {
-		return nil
-	}
-	if query.From.ID == 0 || !c.isAllowed(query.From.ID, query.From.Username) {
-		c.answerCallback(query, "Access denied.")
+	if !c.checkCallbackAccess(query) {
 		return nil
 	}
 	indexStr := strings.TrimPrefix(query.Data, "resume|")
@@ -294,12 +276,14 @@ func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.Cal
 	}
 
 	chatID := getChatIDFromQuery(query)
+	compositeID := toCompositeChatID(chatID)
+
 	if c.callbacks.OnResumeChoice == nil {
 		c.answerCallback(query, "Selection expired.")
 		return nil
 	}
 
-	s, err := c.callbacks.OnResumeChoice(ctx.Context(), chatID, index)
+	s, err := c.callbacks.OnResumeChoice(ctx.Context(), compositeID, index)
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "expired") {
@@ -337,8 +321,32 @@ func getChatIDFromQuery(query telego.CallbackQuery) int64 {
 	return query.From.ID
 }
 
+func toCompositeChatID(chatID int64) string {
+	return "telegram:" + strconv.FormatInt(chatID, 10)
+}
+
 func (c *TelegramChannel) answerCallback(query telego.CallbackQuery, text string) {
 	_ = c.bot.AnswerCallbackQuery(context.TODO(), tu.CallbackQuery(query.ID).WithText(text))
+}
+
+func (c *TelegramChannel) checkCallbackAccess(query telego.CallbackQuery) bool {
+	if query.From.ID == 0 || !c.isAllowed(query.From.ID, query.From.Username) {
+		c.answerCallback(query, "Access denied.")
+		return false
+	}
+	return true
+}
+
+func (c *TelegramChannel) clearCallbackReplyMarkup(ctx context.Context, query telego.CallbackQuery) {
+	if query.Message == nil {
+		return
+	}
+	chatID := getChatIDFromQuery(query)
+	_, _ = c.bot.EditMessageReplyMarkup(ctx, &telego.EditMessageReplyMarkupParams{
+		ChatID:      tu.ID(chatID),
+		MessageID:   query.Message.GetMessageID(),
+		ReplyMarkup: tu.InlineKeyboard(),
+	})
 }
 
 func (c *TelegramChannel) isAllowed(userID int64, username string) bool {

@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,16 +37,11 @@ type App struct {
 
 // SetupApp assembles all components from config and returns a runnable App.
 func SetupApp(cfg *config.Config, echoMode bool) (*App, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	mcpChannelPath := filepath.Join(filepath.Dir(exe), "mcp-channel")
 	memoryDir := config.GetAcpclawMemoryDir()
 	historyDir := config.GetAcpclawHistoryDir()
 	cronDir := config.GetAcpclawCronDir()
 
-	agentSvc := buildAgentService(cfg, echoMode, mcpChannelPath, memoryDir, historyDir, cronDir)
+	agentSvc := buildAgentService(cfg, echoMode)
 	bot, err := buildTelegramBot(cfg)
 	if err != nil {
 		return nil, err
@@ -114,8 +108,13 @@ func (a *App) Run() error {
 func buildAgentService(
 	cfg *config.Config,
 	echoMode bool,
-	mcpChannelPath, memoryDir, historyDir, cronDir string,
 ) domain.AgentService {
+	exe, err := os.Executable()
+	if err != nil {
+		slog.Error("failed to get executable path", "error", err)
+		exe = os.Args[0]
+	}
+
 	agentCmd := strings.Fields(cfg.Agent.Command)
 	svcCfg := agent.ServiceConfig{
 		AgentCommand:   agentCmd,
@@ -128,21 +127,8 @@ func buildAgentService(
 			{
 				Stdio: &acpsdk.McpServerStdio{
 					Name:    "acpclaw-memory",
-					Command: mcpChannelPath,
-					Args:    []string{},
-					Env: func() []acpsdk.EnvVariable {
-						var envs []acpsdk.EnvVariable
-						if cfg.Memory.Enabled {
-							envs = append(envs,
-								acpsdk.EnvVariable{Name: "ACPCLAW_MEMORY_DIR", Value: memoryDir},
-								acpsdk.EnvVariable{Name: "ACPCLAW_HISTORY_DIR", Value: historyDir},
-							)
-						}
-						if cfg.Cron.Enabled {
-							envs = append(envs, acpsdk.EnvVariable{Name: "ACPCLAW_CRON_DIR", Value: cronDir})
-						}
-						return envs
-					}(),
+					Command: exe,
+					Args:    []string{"mcp"},
 				},
 			},
 		},
@@ -185,39 +171,40 @@ func buildDispatcher(cfg *config.Config, agentSvc domain.AgentService) *dispatch
 	return disp
 }
 
+var callbackDecisionToDomain = map[string]domain.PermissionDecision{
+	"always": domain.PermissionAlways,
+	"once":   domain.PermissionThisTime,
+	"deny":   domain.PermissionDeny,
+}
+
 func buildTelegramChannel(
 	cfg *config.Config,
 	bot *telego.Bot,
 	updates <-chan telego.Update,
 	disp *dispatcher.Dispatcher,
 ) *telegram.TelegramChannel {
-	tgCfg := telegram.ChannelConfig{
+	allowlistCfg := dispatcher.AllowlistConfig{
 		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
 		AllowedUsernames: cfg.Telegram.AllowedUsernames,
 	}
-	allowlistChecker := dispatcher.NewAllowlistChecker(dispatcher.AllowlistConfig{
-		AllowedUserIDs:   cfg.Telegram.AllowedUserIDs,
-		AllowedUsernames: cfg.Telegram.AllowedUsernames,
-	})
+	tgCfg := telegram.ChannelConfig{
+		AllowedUserIDs:   allowlistCfg.AllowedUserIDs,
+		AllowedUsernames: allowlistCfg.AllowedUsernames,
+	}
 	return telegram.NewTelegramChannel(
 		bot,
 		updates,
 		tgCfg,
 		telegram.CallbackHandlers{
 			OnPermission: func(reqID, decision string) {
-				decisionMap := map[string]domain.PermissionDecision{
-					"always": domain.PermissionAlways,
-					"once":   domain.PermissionThisTime,
-					"deny":   domain.PermissionDeny,
-				}
-				if d, ok := decisionMap[decision]; ok {
+				if d, ok := callbackDecisionToDomain[decision]; ok {
 					disp.RespondPermission(reqID, d)
 				}
 			},
 			OnBusySendNow:  disp.HandleBusySendNow,
 			OnResumeChoice: disp.ResolveResumeChoice,
 		},
-		allowlistChecker,
+		dispatcher.NewAllowlistChecker(allowlistCfg),
 	)
 }
 
@@ -235,7 +222,7 @@ func setupCron(
 			slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
 			return
 		}
-		msg := domain.InboundMessage{ChatID: job.ChatID, Text: job.Message}
+		msg := domain.InboundMessage{ChatID: job.Channel + ":" + job.ChatID, Text: job.Message}
 		chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
 		resp := telegram.NewBackgroundResponder(bot, chatIDInt)
 		disp.Handle(msg, resp)

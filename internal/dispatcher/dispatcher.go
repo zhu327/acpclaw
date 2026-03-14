@@ -252,12 +252,24 @@ func (d *Dispatcher) buildFirstPromptPrefix(chatID string) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func (d *Dispatcher) buildSessionInfoBlock(chatID string) string {
-	channel := d.cfg.ChannelName
-	if channel == "" {
-		channel = "telegram"
+// parseCompositeChatID splits "channel:rawID" into its parts.
+// If no colon is present, returns ("", chatID).
+func parseCompositeChatID(chatID string) (channel, rawID string) {
+	if ch, raw, ok := strings.Cut(chatID, ":"); ok {
+		return ch, raw
 	}
-	return fmt.Sprintf("[Session Info]\nchannel: %s\nchat_id: %s\n[/Session Info]", channel, chatID)
+	return "", chatID
+}
+
+func (d *Dispatcher) buildSessionInfoBlock(chatID string) string {
+	channel, rawChatID := parseCompositeChatID(chatID)
+	if channel == "" {
+		channel = d.cfg.ChannelName
+		if channel == "" {
+			channel = "telegram"
+		}
+	}
+	return fmt.Sprintf("[Session Info]\nchannel: %s\nchat_id: %s\n[/Session Info]", channel, rawChatID)
 }
 
 func (d *Dispatcher) appendUserToHistory(chatID string, text string) {
@@ -452,30 +464,28 @@ func (d *Dispatcher) PermissionActions(reqID string) []domain.PermissionDecision
 }
 
 // HandleBusySendNow is called by Channel when "Send now" button is clicked.
-func (d *Dispatcher) HandleBusySendNow(chatID int64, token string) (ok bool, err error) {
-	chatIDStr := strconv.FormatInt(chatID, 10)
+func (d *Dispatcher) HandleBusySendNow(chatID string, token string) (ok bool, err error) {
 	d.pendingMu.Lock()
-	p := d.pendingByChat[chatIDStr]
+	p := d.pendingByChat[chatID]
 	if p == nil || p.token != token {
 		d.pendingMu.Unlock()
 		return false, nil
 	}
 	d.pendingMu.Unlock()
 
-	d.cancelRequested.Store(chatIDStr, struct{}{})
-	if err := d.agentSvc.Cancel(d.ctx, chatIDStr); err != nil {
-		d.cancelRequested.Delete(chatIDStr)
+	d.cancelRequested.Store(chatID, struct{}{})
+	if err := d.agentSvc.Cancel(d.ctx, chatID); err != nil {
+		d.cancelRequested.Delete(chatID)
 		return false, err
 	}
 	return true, nil
 }
 
 // ResolveResumeChoice resolves a pending resume keyboard selection.
-func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID int64, index int) (*domain.SessionInfo, error) {
-	chatIDStr := strconv.FormatInt(chatID, 10)
+func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID string, index int) (*domain.SessionInfo, error) {
 	d.resumeChoicesMu.Lock()
-	candidates := d.pendingResumeChoices[chatIDStr]
-	delete(d.pendingResumeChoices, chatIDStr)
+	candidates := d.pendingResumeChoices[chatID]
+	delete(d.pendingResumeChoices, chatID)
 	d.resumeChoicesMu.Unlock()
 
 	if candidates == nil {
@@ -484,8 +494,9 @@ func (d *Dispatcher) ResolveResumeChoice(ctx context.Context, chatID int64, inde
 	if index < 0 || index >= len(candidates) {
 		return nil, fmt.Errorf("invalid selection")
 	}
+	d.summarizeIfEnabled(ctx, chatID)
 	s := candidates[index]
-	if err := d.agentSvc.LoadSession(ctx, chatIDStr, s.SessionID, s.Workspace); err != nil {
+	if err := d.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
 		return nil, err
 	}
 	return &s, nil

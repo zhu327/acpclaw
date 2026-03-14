@@ -78,6 +78,50 @@ func (e *echoAgentStub) SetPermissionHandler(
 }
 func (e *echoAgentStub) SetSessionPermissionMode(_ string, _ domain.PermissionMode) {}
 
+type multiSessionStub struct {
+	echoAgentStub
+}
+
+func newMultiSessionStub() *multiSessionStub {
+	return &multiSessionStub{echoAgentStub: *newEchoAgentStub()}
+}
+
+func (m *multiSessionStub) ListSessions(_ context.Context, chatID string) ([]domain.SessionInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	active, ok := m.sessions[chatID]
+	if !ok {
+		return nil, domain.ErrNoActiveProcess
+	}
+	return []domain.SessionInfo{
+		active,
+		{SessionID: "other-session", Workspace: "/tmp", Title: "Other"},
+	}, nil
+}
+
+type mockMemoryService struct {
+	mu              sync.Mutex
+	summarizeCalls  []string // chatIDs that SummarizeSession was called with
+	summarizeResult error
+}
+
+func (m *mockMemoryService) AppendHistory(chatID, role, text string) error { return nil }
+func (m *mockMemoryService) SummarizeSession(ctx context.Context, chatID string, summarizer domain.Summarizer) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.summarizeCalls = append(m.summarizeCalls, chatID)
+	return m.summarizeResult
+}
+func (m *mockMemoryService) BuildSessionContext(ctx context.Context) (string, error) {
+	return "", nil
+}
+
+type noopSummarizer struct{}
+
+func (noopSummarizer) Summarize(ctx context.Context, transcript string) (string, error) {
+	return "summary", nil
+}
+
 type mockResponder struct {
 	mu         sync.Mutex
 	replies    []domain.OutboundMessage
@@ -108,7 +152,7 @@ func TestDispatcher_Handle_SlashNew(t *testing.T) {
 	d.SetAgentService(svc)
 
 	resp := &mockResponder{}
-	msg := domain.InboundMessage{ChatID: "100", Text: "/new", ChannelKind: "test"}
+	msg := domain.InboundMessage{ChatID: "telegram:100", Text: "/new", ChannelKind: "test"}
 
 	d.Handle(msg, resp)
 
@@ -123,7 +167,7 @@ func TestDispatcher_Handle_SlashStatus(t *testing.T) {
 	d.SetAgentService(newEchoAgentStub())
 
 	resp := &mockResponder{}
-	msg := domain.InboundMessage{ChatID: "100", Text: "/status", ChannelKind: "test"}
+	msg := domain.InboundMessage{ChatID: "telegram:100", Text: "/status", ChannelKind: "test"}
 
 	d.Handle(msg, resp)
 
@@ -141,7 +185,7 @@ func TestDispatcher_Handle_SlashHelp(t *testing.T) {
 
 	resp := &mockResponder{}
 	msg := domain.InboundMessage{
-		ChatID:      "12345",
+		ChatID:      "telegram:12345",
 		Text:        "/help",
 		ChannelKind: "test",
 	}
@@ -153,4 +197,67 @@ func TestDispatcher_Handle_SlashHelp(t *testing.T) {
 	require.Len(t, resp.replies, 1)
 	assert.Contains(t, resp.replies[0].Text, "/new")
 	assert.Contains(t, resp.replies[0].Text, "/help")
+}
+
+func TestDispatcher_Reconnect_TriggersSummary(t *testing.T) {
+	mem := &mockMemoryService{}
+	d := dispatcher.New(dispatcher.Config{
+		DefaultWorkspace: "/tmp",
+		AutoSummarize:    true,
+		NewSummarizer:    func(chatID string) domain.Summarizer { return noopSummarizer{} },
+	})
+	svc := newEchoAgentStub()
+	d.SetAgentService(svc)
+	d.SetMemoryService(mem)
+
+	chatID := "telegram:200"
+	resp := &mockResponder{}
+
+	// Create initial session
+	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/new /tmp"}, resp)
+
+	// Clear summary calls from /new
+	mem.mu.Lock()
+	mem.summarizeCalls = nil
+	mem.mu.Unlock()
+
+	// Reconnect should trigger summary
+	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/reconnect"}, resp)
+
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	assert.Contains(t, mem.summarizeCalls, chatID, "reconnect should trigger summarize")
+}
+
+func TestDispatcher_ResolveResumeChoice_TriggersSummary(t *testing.T) {
+	mem := &mockMemoryService{}
+	d := dispatcher.New(dispatcher.Config{
+		DefaultWorkspace: "/tmp",
+		AutoSummarize:    true,
+		NewSummarizer:    func(chatID string) domain.Summarizer { return noopSummarizer{} },
+	})
+	svc := newMultiSessionStub()
+	d.SetAgentService(svc)
+	d.SetMemoryService(mem)
+
+	chatID := "telegram:300"
+	resp := &mockResponder{}
+
+	// Create initial session so agent is running
+	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/new /tmp"}, resp)
+
+	// /resume with no args populates pendingResumeChoices via ShowResumeKeyboard
+	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/resume"}, resp)
+
+	// Clear summary calls from /new
+	mem.mu.Lock()
+	mem.summarizeCalls = nil
+	mem.mu.Unlock()
+
+	// ResolveResumeChoice should trigger summary
+	_, _ = d.ResolveResumeChoice(context.Background(), chatID, 0)
+
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	assert.Contains(t, mem.summarizeCalls, chatID, "ResolveResumeChoice should trigger summarize")
 }

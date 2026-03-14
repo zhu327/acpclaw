@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
@@ -23,11 +24,17 @@ var permissionAction = map[string]struct {
 	"deny":         {"Deny", "deny"},
 }
 
+const activityAccumulatorLimit = 4000
+
 // TelegramResponder implements domain.Responder for Telegram.
 type TelegramResponder struct {
 	bot    *telego.Bot
 	chatID int64
 	msgID  int
+
+	mu            sync.Mutex
+	activityMsgID int
+	activityText  string
 }
 
 var _ domain.Responder = (*TelegramResponder)(nil)
@@ -127,15 +134,76 @@ func (r *TelegramResponder) ShowTypingIndicator() error {
 
 // SendActivity sends an agent activity block as a message.
 func (r *TelegramResponder) SendActivity(block domain.ActivityBlock) error {
-	text := formatActivityMessage(block)
-	chunks := RenderMarkdown(text)
-	for _, chunk := range chunks {
-		params := tu.Message(tu.ID(r.chatID), chunk.Text).WithParseMode(telego.ModeMarkdownV2)
-		if _, err := r.bot.SendMessage(context.TODO(), params); err != nil {
-			_, _ = r.bot.SendMessage(context.TODO(), tu.Message(tu.ID(r.chatID), text))
-			break
+	var line string
+	switch block.Kind {
+	case domain.ActivityThink:
+		text := block.Text
+		if text != "" {
+			text = truncateRunes(text, maxThinkTextRunes)
 		}
+		line = "**" + block.Label + "**"
+		if text != "" {
+			line += "\n" + text
+		}
+	case domain.ActivityExecute:
+		line = formatActivityMessage(block)
+	default:
+		line = formatActivityLine(block)
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.activityMsgID == 0 {
+		return r.sendNewActivityMessage(line)
+	}
+
+	newText := r.activityText + "\n" + line
+	if len([]rune(newText)) > activityAccumulatorLimit {
+		return r.sendNewActivityMessage(line)
+	}
+
+	r.activityText = newText
+	chunks := RenderMarkdown(r.activityText)
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	_, err := r.bot.EditMessageText(context.TODO(), &telego.EditMessageTextParams{
+		ChatID:    tu.ID(r.chatID),
+		MessageID: r.activityMsgID,
+		Text:      chunks[0].Text,
+		ParseMode: telego.ModeMarkdownV2,
+	})
+	if err != nil {
+		return r.sendNewActivityMessage(line)
+	}
+	return nil
+}
+
+func (r *TelegramResponder) sendNewActivityMessage(text string) error {
+	if text == "" {
+		return nil
+	}
+	r.activityText = text
+
+	chunks := RenderMarkdown(text)
+	var params *telego.SendMessageParams
+	if len(chunks) > 0 {
+		params = tu.Message(tu.ID(r.chatID), chunks[0].Text).WithParseMode(telego.ModeMarkdownV2)
+	} else {
+		params = tu.Message(tu.ID(r.chatID), text)
+	}
+
+	sent, err := r.bot.SendMessage(context.TODO(), params)
+	if err != nil && len(chunks) > 0 {
+		sent, err = r.bot.SendMessage(context.TODO(), tu.Message(tu.ID(r.chatID), text))
+	}
+	if err != nil {
+		r.activityMsgID = 0
+		return err
+	}
+	r.activityMsgID = sent.MessageID
 	return nil
 }
 
@@ -192,6 +260,26 @@ func truncate(s string, maxLen int) string {
 }
 
 // --- Activity formatting ---
+
+const maxThinkTextRunes = 100
+
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func formatActivityLine(block domain.ActivityBlock) string {
+	detailParts, detail := formatActivityDetail(block)
+	parts := []string{block.Label}
+	parts = append(parts, detailParts...)
+	if detail != "" && detail != block.Label {
+		parts = append(parts, detail)
+	}
+	return strings.Join(parts, " ")
+}
 
 var searchLocalWordBoundary = regexp.MustCompile(
 	`\b(workspace|repository|repo|project|ripgrep|rg|grep|glob)\b`,
@@ -296,8 +384,13 @@ func formatActivityMessage(block domain.ActivityBlock) string {
 	if detail != "" && detail != block.Label {
 		parts = append(parts, detail)
 	}
-	if block.Text != "" && block.Text != block.Detail && block.Text != block.Label {
-		parts = append(parts, block.Text)
+
+	text := block.Text
+	if block.Kind == domain.ActivityThink && text != "" {
+		text = truncateRunes(text, maxThinkTextRunes)
+	}
+	if text != "" && text != block.Detail && text != block.Label {
+		parts = append(parts, text)
 	}
 	if block.Status == "failed" {
 		parts = append(parts, "_Failed_")

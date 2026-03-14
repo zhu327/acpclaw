@@ -22,13 +22,11 @@ func parseCommand(text string) string {
 	if !strings.HasPrefix(trimmed, "/") {
 		return ""
 	}
-	end := strings.IndexByte(trimmed, ' ')
-	var name string
-	if end == -1 {
-		name = strings.ToLower(trimmed[1:])
-	} else {
-		name = strings.ToLower(trimmed[1:end])
+	cmd := trimmed[1:]
+	if end := strings.IndexByte(cmd, ' '); end != -1 {
+		cmd = cmd[:end]
 	}
+	name := strings.ToLower(cmd)
 	if commandSet[name] {
 		return name
 	}
@@ -162,16 +160,21 @@ func (d *Dispatcher) resolveWorkspace(args []string) string {
 	return ws
 }
 
+func (d *Dispatcher) summarizeIfEnabled(ctx context.Context, chatID string) {
+	if !d.cfg.AutoSummarize || d.memorySvc == nil || d.cfg.NewSummarizer == nil {
+		return
+	}
+	summarizer := d.cfg.NewSummarizer(chatID)
+	if err := d.memorySvc.SummarizeSession(ctx, chatID, summarizer); err != nil {
+		slog.Warn("failed to summarize session", "chat_id", chatID, "error", err)
+	}
+}
+
 func (d *Dispatcher) handleNew(ctx context.Context, chatID string, args []string, resp domain.Responder) {
 	if !d.ensureAgentConfigured(resp) {
 		return
 	}
-	if d.cfg.AutoSummarize && d.memorySvc != nil && d.cfg.NewSummarizer != nil {
-		summarizer := d.cfg.NewSummarizer(chatID)
-		if err := d.memorySvc.SummarizeSession(ctx, chatID, summarizer); err != nil {
-			slog.Warn("failed to summarize session", "chat_id", chatID, "error", err)
-		}
-	}
+	d.summarizeIfEnabled(ctx, chatID)
 
 	workspace := d.resolveWorkspace(args)
 	if err := d.agentSvc.NewSession(ctx, chatID, workspace); err != nil {
@@ -276,6 +279,7 @@ func (d *Dispatcher) handleResumeByIndex(
 		replyBestEffort(resp, "Invalid session number.")
 		return
 	}
+	d.summarizeIfEnabled(ctx, chatID)
 	s := filtered[n-1]
 	if err := d.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
 		if errors.Is(err, domain.ErrLoadSessionNotSupported) {
@@ -311,6 +315,7 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, chatID string, args []
 	if !d.ensureAgentConfigured(resp) {
 		return
 	}
+	d.summarizeIfEnabled(ctx, chatID)
 	workspace := d.resolveWorkspace(args)
 	if err := d.agentSvc.Reconnect(ctx, chatID, workspace); err != nil {
 		replyBestEffort(resp, "❌ Failed to reconnect.")

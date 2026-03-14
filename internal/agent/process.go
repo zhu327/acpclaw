@@ -38,6 +38,7 @@ var defaultAgentEnvAllowlist = []string{
 	"TMPDIR", "TMP", "TEMP",
 	"XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
 	"SSH_AUTH_SOCK", "GPG_AGENT_INFO",
+	"ACPCLAW_HOME",
 }
 
 func stopLiveSession(live *liveSession) {
