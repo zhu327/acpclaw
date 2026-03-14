@@ -16,6 +16,7 @@ import (
 	"github.com/mymmrac/telego"
 	"github.com/zhu327/acpclaw/internal/agent"
 	"github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
+	"github.com/zhu327/acpclaw/internal/builtin/commands"
 	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/framework"
@@ -24,11 +25,13 @@ import (
 
 // BuiltinPlugin provides the default implementation of all framework hooks.
 type BuiltinPlugin struct {
-	cfg       *config.Config
-	echo      bool
-	fw        *framework.Framework
-	agentSvc  domain.AgentService
-	tgChannel *telegram.TelegramChannel
+	cfg        *config.Config
+	echo       bool
+	fw         *framework.Framework
+	agentSvc   domain.AgentService
+	tgChannel  *telegram.TelegramChannel
+	adapter     *commands.AgentAdapter
+	resumeStore commands.ResumeChoicesStore
 }
 
 // NewPlugin creates a new BuiltinPlugin.
@@ -47,6 +50,8 @@ func (b *BuiltinPlugin) Init(fw any) error {
 	}
 	b.fw = f
 	b.buildAgentService()
+	b.adapter = commands.NewAgentAdapter(b.agentSvc)
+	b.resumeStore = commands.NewResumeChoicesStore()
 	b.wireAgentCallbacks()
 	return nil
 }
@@ -95,9 +100,25 @@ func (b *BuiltinPlugin) Channels() []domain.Channel {
 	return nil
 }
 
-// Commands implements domain.CommandProvider. Phase 2 returns empty; Phase 3 adds commands.
+// Commands implements domain.CommandProvider.
 func (b *BuiltinPlugin) Commands() []domain.Command {
-	return nil
+	if b.adapter == nil {
+		return nil
+	}
+	defaultWs := b.cfg.Agent.Workspace
+	if defaultWs == "" {
+		defaultWs = "."
+	}
+	return []domain.Command{
+		commands.NewStartCommand(),
+		commands.NewHelpCommand(),
+		commands.NewNewCommand(b.adapter, defaultWs),
+		commands.NewSessionCommand(b.adapter),
+		commands.NewResumeCommand(b.adapter, b.resumeStore),
+		commands.NewCancelCommand(b.adapter),
+		commands.NewReconnectCommand(b.adapter, defaultWs),
+		commands.NewStatusCommand(b.adapter),
+	}
 }
 
 // Shutdown stops the agent service. Call on process exit.
@@ -105,6 +126,22 @@ func (b *BuiltinPlugin) Shutdown() {
 	if b.agentSvc != nil {
 		b.agentSvc.Shutdown()
 	}
+}
+
+// ResolveResumeChoice implements domain.ResumeHandler.
+func (b *BuiltinPlugin) ResolveResumeChoice(ctx context.Context, chat domain.ChatRef, sessionIndex int) (*domain.SessionInfo, error) {
+	if b.resumeStore == nil {
+		return nil, nil
+	}
+	s, ok := b.resumeStore.Get(chat, sessionIndex)
+	if !ok {
+		return nil, nil
+	}
+	chatID := chat.CompositeKey()
+	if err := b.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // ResolveSession implements domain.SessionResolver.
