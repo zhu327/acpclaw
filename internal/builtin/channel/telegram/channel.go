@@ -342,10 +342,6 @@ func getChatIDFromQuery(query telego.CallbackQuery) int64 {
 	return query.From.ID
 }
 
-func toCompositeChatID(chatID int64) string {
-	return "telegram:" + strconv.FormatInt(chatID, 10)
-}
-
 func (c *TelegramChannel) answerCallback(query telego.CallbackQuery, text string) {
 	_ = c.bot.AnswerCallbackQuery(context.TODO(), tu.CallbackQuery(query.ID).WithText(text))
 }

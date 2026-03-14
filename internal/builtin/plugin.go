@@ -2,7 +2,11 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +19,7 @@ import (
 	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/framework"
+	"golang.org/x/net/proxy"
 )
 
 // BuiltinPlugin provides the default implementation of all framework hooks.
@@ -93,6 +98,13 @@ func (b *BuiltinPlugin) Channels() []domain.Channel {
 // Commands implements domain.CommandProvider. Phase 2 returns empty; Phase 3 adds commands.
 func (b *BuiltinPlugin) Commands() []domain.Command {
 	return nil
+}
+
+// Shutdown stops the agent service. Call on process exit.
+func (b *BuiltinPlugin) Shutdown() {
+	if b.agentSvc != nil {
+		b.agentSvc.Shutdown()
+	}
 }
 
 // ResolveSession implements domain.SessionResolver.
@@ -229,9 +241,65 @@ func (b *BuiltinPlugin) buildAgentService() {
 	}
 }
 
+// CreateTelegramBot creates the Telegram bot from config.
+func (b *BuiltinPlugin) CreateTelegramBot() (*telego.Bot, error) {
+	var opts []telego.BotOption
+	if b.cfg.Telegram.Proxy != "" {
+		httpClient, err := buildProxyHTTPClient(b.cfg.Telegram.Proxy)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, telego.WithHTTPClient(httpClient))
+		slog.Info("using proxy", "proxy", b.cfg.Telegram.Proxy)
+	}
+	opts = append(opts, telego.WithLogger(telegoLogger{}))
+	return telego.NewBot(b.cfg.Telegram.Token, opts...)
+}
+
 // PrepareTelegramChannel creates and sets the Telegram channel. Call before Framework.Init().
 func (b *BuiltinPlugin) PrepareTelegramChannel(bot *telego.Bot, updates <-chan telego.Update, fw *framework.Framework) {
 	b.tgChannel = b.buildTelegramChannel(bot, updates, fw)
+}
+
+func buildProxyHTTPClient(proxyAddr string) (*http.Client, error) {
+	proxyURL, err := url.Parse(proxyAddr)
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
+		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
+		if err != nil {
+			return nil, err
+		}
+		transport = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.Dial(network, addr)
+			},
+		}
+	}
+	return &http.Client{Transport: transport}, nil
+}
+
+type telegoLogger struct{}
+
+func (telegoLogger) Debugf(format string, args ...any) {
+	slog.Debug(fmt.Sprintf(format, args...))
+}
+
+func (telegoLogger) Errorf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if isShutdownNoise(msg) {
+		slog.Debug("telego shutdown", "msg", msg)
+		return
+	}
+	slog.Error(msg)
+}
+
+func isShutdownNoise(msg string) bool {
+	return strings.Contains(msg, "interrupt signal") ||
+		strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "context deadline exceeded")
 }
 
 func (b *BuiltinPlugin) buildTelegramChannel(bot *telego.Bot, updates <-chan telego.Update, fw *framework.Framework) *telegram.TelegramChannel {

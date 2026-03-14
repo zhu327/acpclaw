@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
+	"github.com/mymmrac/telego"
+	"github.com/zhu327/acpclaw/internal/builtin"
 	"github.com/zhu327/acpclaw/internal/config"
+	"github.com/zhu327/acpclaw/internal/framework"
 )
 
 const usageText = `Usage: acpclaw [command] [flags]
@@ -53,11 +59,38 @@ func run() error {
 
 	initLogging(cfg)
 
-	app, err := SetupApp(cfg, *echoMode)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	fw := framework.New()
+	bp, err := builtin.NewPlugin(cfg, *echoMode)
 	if err != nil {
 		return err
 	}
-	return app.Run()
+	defer bp.Shutdown()
+
+	fw.Register(bp)
+
+	bot, err := bp.CreateTelegramBot()
+	if err != nil {
+		return err
+	}
+
+	updates, err := bot.UpdatesViaLongPolling(ctx, &telego.GetUpdatesParams{
+		AllowedUpdates: []string{"message", "callback_query"},
+	}, telego.WithLongPollingRetryTimeout(0))
+	if err != nil {
+		return err
+	}
+
+	bp.PrepareTelegramChannel(bot, updates, fw)
+
+	if err := fw.Init(); err != nil {
+		return err
+	}
+
+	slog.Info("bot started", "workspace", cfg.Agent.Workspace)
+	return fw.Start(ctx)
 }
 
 func loadConfig(path string) (*config.Config, error) {
