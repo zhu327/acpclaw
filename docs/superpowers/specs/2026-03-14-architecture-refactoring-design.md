@@ -347,20 +347,28 @@ type Responder interface {
 }
 ```
 
-`ChannelKind()` added so framework can identify the source channel without parsing composite keys.
+`ChannelKind()` remains on Responder for contexts where only the Responder is available (e.g. outbound dispatch, error observers). For inbound processing, `InboundMessage.ChannelKind` is the primary source.
 
-### Composite Key
+### Channel Identification and Composite Key
 
-Channels set composite key when constructing `InboundMessage`:
+`InboundMessage.ChannelKind` is the explicit channel identifier. `ChatID` stays as a pure, channel-local ID (e.g. `"12345"`, not `"telegram:12345"`):
 
 ```go
 msg := domain.InboundMessage{
-    ChatID:      "telegram:" + strconv.FormatInt(tgMsg.Chat.ID, 10),
+    ChatID:      strconv.FormatInt(tgMsg.Chat.ID, 10),
     ChannelKind: "telegram",
 }
 ```
 
-Framework and all hooks treat `ChatID` as an opaque string.
+When a globally unique key is needed (map lookups, history paths, session resolution), the Framework constructs a composite key internally via a helper:
+
+```go
+func CompositeKey(channelKind, chatID string) string {
+    return channelKind + ":" + chatID
+}
+```
+
+Hooks and commands receive the `InboundMessage` with both fields available. They use `ChatID` for channel-local operations (e.g. Telegram API calls) and `ChannelKind` for channel-aware logic. The composite key is an internal concern of the Framework and storage layers — it is not exposed on `InboundMessage`.
 
 ### Callback Decoupling
 
