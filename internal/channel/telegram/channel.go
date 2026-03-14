@@ -129,10 +129,9 @@ func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) do
 	}
 
 	inbound := domain.InboundMessage{
-		ID:          strconv.Itoa(msg.MessageID),
-		ChatID:      "telegram:" + strconv.FormatInt(msg.Chat.ID, 10),
-		Text:        text,
-		ChannelKind: "telegram",
+		ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: "telegram:" + strconv.FormatInt(msg.Chat.ID, 10)},
+		ID:      strconv.Itoa(msg.MessageID),
+		Text:    text,
 	}
 	if msg.From != nil {
 		inbound.AuthorID = strconv.FormatInt(msg.From.ID, 10)

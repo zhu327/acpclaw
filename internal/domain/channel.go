@@ -2,12 +2,11 @@ package domain
 
 // InboundMessage is the cross-channel unified inbound message format.
 type InboundMessage struct {
+	ChatRef
 	ID          string
-	ChatID      string
 	Text        string
 	AuthorID    string
 	AuthorName  string
-	ChannelKind string
 	Attachments []Attachment
 }
 

@@ -152,7 +152,7 @@ func TestDispatcher_Handle_SlashNew(t *testing.T) {
 	d.SetAgentService(svc)
 
 	resp := &mockResponder{}
-	msg := domain.InboundMessage{ChatID: "telegram:100", Text: "/new", ChannelKind: "test"}
+	msg := domain.InboundMessage{ChatRef: domain.ChatRef{ChannelKind: "test", ChatID: "telegram:100"}, Text: "/new"}
 
 	d.Handle(msg, resp)
 
@@ -167,7 +167,7 @@ func TestDispatcher_Handle_SlashStatus(t *testing.T) {
 	d.SetAgentService(newEchoAgentStub())
 
 	resp := &mockResponder{}
-	msg := domain.InboundMessage{ChatID: "telegram:100", Text: "/status", ChannelKind: "test"}
+	msg := domain.InboundMessage{ChatRef: domain.ChatRef{ChannelKind: "test", ChatID: "telegram:100"}, Text: "/status"}
 
 	d.Handle(msg, resp)
 
@@ -185,9 +185,8 @@ func TestDispatcher_Handle_SlashHelp(t *testing.T) {
 
 	resp := &mockResponder{}
 	msg := domain.InboundMessage{
-		ChatID:      "telegram:12345",
-		Text:        "/help",
-		ChannelKind: "test",
+		ChatRef: domain.ChatRef{ChannelKind: "test", ChatID: "telegram:12345"},
+		Text:    "/help",
 	}
 
 	d.Handle(msg, resp)
@@ -214,7 +213,7 @@ func TestDispatcher_Reconnect_TriggersSummary(t *testing.T) {
 	resp := &mockResponder{}
 
 	// Create initial session
-	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/new /tmp"}, resp)
+	d.Handle(domain.InboundMessage{ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: chatID}, Text: "/new /tmp"}, resp)
 
 	// Clear summary calls from /new
 	mem.mu.Lock()
@@ -222,7 +221,7 @@ func TestDispatcher_Reconnect_TriggersSummary(t *testing.T) {
 	mem.mu.Unlock()
 
 	// Reconnect should trigger summary
-	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/reconnect"}, resp)
+	d.Handle(domain.InboundMessage{ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: chatID}, Text: "/reconnect"}, resp)
 
 	mem.mu.Lock()
 	defer mem.mu.Unlock()
@@ -244,10 +243,10 @@ func TestDispatcher_ResolveResumeChoice_TriggersSummary(t *testing.T) {
 	resp := &mockResponder{}
 
 	// Create initial session so agent is running
-	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/new /tmp"}, resp)
+	d.Handle(domain.InboundMessage{ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: chatID}, Text: "/new /tmp"}, resp)
 
 	// /resume with no args populates pendingResumeChoices via ShowResumeKeyboard
-	d.Handle(domain.InboundMessage{ChatID: chatID, Text: "/resume"}, resp)
+	d.Handle(domain.InboundMessage{ChatRef: domain.ChatRef{ChannelKind: "telegram", ChatID: chatID}, Text: "/resume"}, resp)
 
 	// Clear summary calls from /new
 	mem.mu.Lock()

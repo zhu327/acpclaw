@@ -222,7 +222,7 @@ func setupCron(
 			slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
 			return
 		}
-		msg := domain.InboundMessage{ChatID: job.Channel + ":" + job.ChatID, Text: job.Message}
+		msg := domain.InboundMessage{ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.Channel + ":" + job.ChatID}, Text: job.Message}
 		chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
 		resp := telegram.NewBackgroundResponder(bot, chatIDInt)
 		disp.Handle(msg, resp)
