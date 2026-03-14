@@ -14,7 +14,7 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/mymmrac/telego"
-	"github.com/zhu327/acpclaw/internal/agent"
+	"github.com/zhu327/acpclaw/internal/builtin/agent"
 	"github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
 	"github.com/zhu327/acpclaw/internal/builtin/commands"
 	"github.com/zhu327/acpclaw/internal/builtin/memory"

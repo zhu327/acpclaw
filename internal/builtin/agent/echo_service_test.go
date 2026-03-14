@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zhu327/acpclaw/internal/agent"
+	"github.com/zhu327/acpclaw/internal/builtin/agent"
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 

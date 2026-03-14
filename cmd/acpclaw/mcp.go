@@ -6,7 +6,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/builtin/cron"
-	internalmcp "github.com/zhu327/acpclaw/internal/mcp"
+	internalmcp "github.com/zhu327/acpclaw/internal/builtin/mcp"
 	"github.com/zhu327/acpclaw/internal/builtin/memory"
 	"github.com/zhu327/acpclaw/internal/templates"
 )
