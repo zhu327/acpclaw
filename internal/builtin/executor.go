@@ -105,7 +105,7 @@ func (e *promptExecutor) HandleBusySendNow(chat domain.ChatRef, token string) (b
 	return true, nil
 }
 
-func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input domain.PromptInput, resp domain.Responder, chat domain.ChatRef, isFirstTurn bool) *domain.Result {
+func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input domain.PromptInput, resp domain.Responder, chat domain.ChatRef, isFirstTurn bool, state domain.State) *domain.Result {
 	for {
 		if isFirstTurn && e.firstPromptPrefix != nil {
 			if prefix := e.firstPromptPrefix(chatID); prefix != "" {
@@ -114,11 +114,18 @@ func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input
 			isFirstTurn = false
 		}
 
+		if state != nil {
+			state["user_text"] = input.Text
+		}
+
 		reply, err := e.agentSvc.Prompt(ctx, chatID, input)
 		if err != nil {
 			if _, wasCancelled := e.cancelRequested.LoadAndDelete(chatID); !wasCancelled {
 				return &domain.Result{Text: "❌ Failed to process your request."}
 			}
+		}
+		if state != nil && reply != nil {
+			state["reply"] = reply
 		}
 		if reply != nil && (reply.Text != "" || len(reply.Images) > 0 || len(reply.Files) > 0) {
 			e.sendReply(resp, reply)
@@ -130,6 +137,7 @@ func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input
 		}
 		_ = resp.ClearBusyNotification(p.notifyMsgID)
 		input = p.input
+		state["reply"] = nil
 	}
 }
 
@@ -142,6 +150,7 @@ func (e *promptExecutor) sendReply(resp domain.Responder, reply *domain.AgentRep
 }
 
 // executePrompt runs the prompt with busy queue logic.
+// Sets state["user_text"] and state["reply"] for StateSaver hooks.
 func (e *promptExecutor) executePrompt(ctx context.Context, action domain.Action, tc *domain.TurnContext) *domain.Result {
 	chatID := tc.Chat.CompositeKey()
 	lock := e.getOrCreateMutex(chatID)
@@ -156,7 +165,7 @@ func (e *promptExecutor) executePrompt(ctx context.Context, action domain.Action
 	defer lock.Unlock()
 
 	isFirstTurn := e.agentSvc.ActiveSession(chatID) == nil
-	return e.runPromptLoop(ctx, chatID, action.Input, tc.Responder, tc.Chat, isFirstTurn)
+	return e.runPromptLoop(ctx, chatID, action.Input, tc.Responder, tc.Chat, isFirstTurn, tc.State)
 }
 
 func parseCompositeChatID(chatID string) (channel, rawID string) {

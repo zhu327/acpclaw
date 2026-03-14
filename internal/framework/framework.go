@@ -115,6 +115,8 @@ func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessag
 	// 2. LoadContext
 	state := make(domain.State)
 	state["commands"] = f.commands
+	state["chat_id"] = key
+	state["session_id"] = sessionID
 	errs := CallAll[domain.ContextLoader](f.registry, func(h domain.ContextLoader) error {
 		return h.LoadContext(ctx, sessionID, state)
 	})

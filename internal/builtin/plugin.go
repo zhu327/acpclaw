@@ -17,9 +17,11 @@ import (
 	"github.com/zhu327/acpclaw/internal/agent"
 	"github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
 	"github.com/zhu327/acpclaw/internal/builtin/commands"
+	"github.com/zhu327/acpclaw/internal/builtin/memory"
 	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/framework"
+	"github.com/zhu327/acpclaw/internal/templates"
 	"golang.org/x/net/proxy"
 )
 
@@ -33,6 +35,7 @@ type BuiltinPlugin struct {
 	adapter     *commands.AgentAdapter
 	resumeStore commands.ResumeChoicesStore
 	executor    *promptExecutor
+	memorySvc   *memory.Service
 }
 
 // NewPlugin creates a new BuiltinPlugin.
@@ -54,13 +57,69 @@ func (b *BuiltinPlugin) Init(fw any) error {
 	b.adapter = commands.NewAgentAdapter(b.agentSvc)
 	b.resumeStore = commands.NewResumeChoicesStore()
 	b.executor = newPromptExecutor(b.agentSvc, f, b.buildFirstPromptPrefix)
+	b.buildMemoryService()
 	b.wireAgentCallbacks()
 	return nil
 }
 
+func (b *BuiltinPlugin) buildMemoryService() {
+	if !b.cfg.Memory.Enabled {
+		return
+	}
+	memoryDir := config.GetAcpclawMemoryDir()
+	historyDir := config.GetAcpclawHistoryDir()
+	svc, err := memory.NewService(memoryDir, historyDir, templates.FS)
+	if err != nil {
+		slog.Warn("memory service init failed", "error", err)
+		return
+	}
+	_ = svc.Reindex()
+	b.memorySvc = svc
+	slog.Info("memory service enabled", "dir", memoryDir)
+}
+
 func (b *BuiltinPlugin) buildFirstPromptPrefix(chatID string) string {
-	// Memory context will be added in Phase 5
-	return buildSessionInfoBlock(chatID, "telegram")
+	var parts []string
+	if b.cfg.Memory.FirstPromptContext && b.memorySvc != nil {
+		if memCtx, err := b.memorySvc.BuildSessionContext(context.Background()); err == nil && memCtx != "" {
+			parts = append(parts, memCtx)
+		}
+	}
+	parts = append(parts, buildSessionInfoBlock(chatID, "telegram"))
+	return strings.Join(parts, "\n\n")
+}
+
+// LoadContext implements domain.ContextLoader.
+func (b *BuiltinPlugin) LoadContext(ctx context.Context, sessionID string, state domain.State) error {
+	if b.memorySvc == nil || !b.cfg.Memory.FirstPromptContext {
+		return nil
+	}
+	memCtx, err := b.memorySvc.BuildSessionContext(ctx)
+	if err != nil {
+		return nil
+	}
+	if memCtx != "" {
+		state["memory_context"] = memCtx
+	}
+	return nil
+}
+
+// SaveState implements domain.StateSaver.
+func (b *BuiltinPlugin) SaveState(ctx context.Context, sessionID string, state domain.State) error {
+	if b.memorySvc == nil {
+		return nil
+	}
+	chatID, _ := state["chat_id"].(string)
+	if chatID == "" {
+		return nil
+	}
+	if userText, ok := state["user_text"].(string); ok && userText != "" {
+		_ = b.memorySvc.AppendHistory(chatID, "user", userText)
+	}
+	if reply, ok := state["reply"].(*domain.AgentReply); ok && reply != nil && reply.Text != "" {
+		_ = b.memorySvc.AppendHistory(chatID, "assistant", reply.Text)
+	}
+	return nil
 }
 
 func (b *BuiltinPlugin) wireAgentCallbacks() {
@@ -128,10 +187,22 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 	}
 }
 
-// Shutdown stops the agent service. Call on process exit.
+// StartBackgroundTasks starts background tasks like memory reindex. Call after Init.
+func (b *BuiltinPlugin) StartBackgroundTasks(ctx context.Context) {
+	if b.memorySvc != nil {
+		go b.memorySvc.StartPeriodicReindex(ctx)
+	}
+}
+
+// Shutdown stops the agent service and closes memory. Call on process exit.
 func (b *BuiltinPlugin) Shutdown() {
 	if b.agentSvc != nil {
 		b.agentSvc.Shutdown()
+	}
+	if b.memorySvc != nil {
+		if err := b.memorySvc.Close(); err != nil {
+			slog.Error("failed to close memory service", "error", err)
+		}
 	}
 }
 

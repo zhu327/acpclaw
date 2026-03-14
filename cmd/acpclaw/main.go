@@ -8,12 +8,17 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mymmrac/telego"
 	"github.com/zhu327/acpclaw/internal/builtin"
+	"github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
+	"github.com/zhu327/acpclaw/internal/builtin/cron"
 	"github.com/zhu327/acpclaw/internal/config"
+	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/framework"
 )
 
@@ -87,6 +92,29 @@ func run() error {
 
 	if err := fw.Init(); err != nil {
 		return err
+	}
+
+	bp.StartBackgroundTasks(ctx)
+
+	if cfg.Cron.Enabled {
+		cronDir := config.GetAcpclawCronDir()
+		cronStore := cron.NewStore(cronDir)
+		scheduler := cron.NewScheduler(cronStore, 30*time.Second)
+		scheduler.OnTrigger(func(job domain.CronJob) {
+			if job.Channel != "telegram" {
+				slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
+				return
+			}
+			chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
+			resp := telegram.NewBackgroundResponder(bot, chatIDInt)
+			msg := domain.InboundMessage{
+				ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
+				Text:    job.Message,
+			}
+			_ = fw.ProcessInbound(ctx, msg, resp)
+		})
+		go scheduler.Start(ctx)
+		slog.Info("cron scheduler started", "dir", cronDir)
 	}
 
 	slog.Info("bot started", "workspace", cfg.Agent.Workspace)
