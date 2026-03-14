@@ -1181,3 +1181,733 @@ git commit -m "milestone: Phase 1 skeleton complete — framework, hooks, regist
 ```
 
 ---
+
+## Chunk 2: Phase 2 — Channel Layer Migration
+
+Connects the Framework to the Telegram channel. After this chunk, the app boots via `Framework.Register()` + `Framework.Start()`.
+
+### Task 1: Move Telegram channel to builtin/channel/telegram/
+
+**Files:**
+- Create: `internal/builtin/channel/telegram/` (copy from `internal/channel/telegram/`)
+- Create: `internal/builtin/plugin.go`
+
+- [ ] **Step 1: Create builtin directory structure**
+
+```bash
+mkdir -p internal/builtin/channel/telegram
+```
+
+- [ ] **Step 2: Copy Telegram channel files**
+
+Copy all files from `internal/channel/telegram/` to `internal/builtin/channel/telegram/`. Update the package declaration to `package telegram` (should already match). Update import paths if needed.
+
+- [ ] **Step 3: Move AllowlistChecker to builtin/channel/telegram/**
+
+Copy `internal/dispatcher/allowlist.go` to `internal/builtin/channel/telegram/allowlist.go`. Update package to `telegram`. Update imports.
+
+- [ ] **Step 4: Verify compilation**
+
+Run: `go build ./internal/builtin/...`
+Expected: success
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/builtin/
+git commit -m "feat(builtin): copy telegram channel and allowlist to builtin package"
+```
+
+### Task 2: Update Telegram channel to accept Framework callbacks
+
+**Files:**
+- Modify: `internal/builtin/channel/telegram/channel.go`
+
+- [ ] **Step 1: Replace CallbackHandlers with Framework reference**
+
+Change `TelegramChannel` to accept a callback interface instead of direct dispatcher references:
+
+```go
+type FrameworkCallbacks interface {
+	RespondPermission(reqID string, decision domain.PermissionDecision)
+	HandleBusySendNow(chat domain.ChatRef, token string) (bool, error)
+	ResolveResumeChoice(ctx context.Context, chat domain.ChatRef, sessionIndex int) (*domain.SessionInfo, error)
+}
+```
+
+Update `NewTelegramChannel` to accept `FrameworkCallbacks` instead of `CallbackHandlers`. In the callback handler methods, construct `ChatRef` from the Telegram chat ID and call Framework methods. The channel maps callback data strings (`"always"`, `"once"`, `"deny"`) to `domain.PermissionDecision` before calling.
+
+- [ ] **Step 2: Verify compilation**
+
+Run: `go build ./internal/builtin/...`
+
+- [ ] **Step 3: Run tests**
+
+Run: `go test ./internal/builtin/... -v`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "refactor(builtin/telegram): use FrameworkCallbacks instead of dispatcher"
+```
+
+### Task 3: Create BuiltinPlugin
+
+**Files:**
+- Create: `internal/builtin/plugin.go`
+
+- [ ] **Step 1: Write BuiltinPlugin struct**
+
+```go
+package builtin
+
+import (
+	"github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
+	"github.com/zhu327/acpclaw/internal/config"
+	"github.com/zhu327/acpclaw/internal/domain"
+)
+
+type BuiltinPlugin struct {
+	cfg        *config.Config
+	echo       bool
+	fw         any // *framework.Framework, set during Init
+	tgChannel  *telegram.TelegramChannel
+	sessionMgr domain.SessionManager
+	prompter   domain.Prompter
+}
+
+func NewPlugin(cfg *config.Config, echoMode bool) (*BuiltinPlugin, error) {
+	return &BuiltinPlugin{cfg: cfg, echo: echoMode}, nil
+}
+
+func (b *BuiltinPlugin) Name() string { return "builtin" }
+
+func (b *BuiltinPlugin) Init(fw any) error {
+	b.fw = fw
+	b.buildAgentService()
+	b.buildTelegramChannel()
+	return nil
+}
+
+func (b *BuiltinPlugin) Channels() []domain.Channel {
+	if b.tgChannel != nil {
+		return []domain.Channel{b.tgChannel}
+	}
+	return nil
+}
+```
+
+- [ ] **Step 2: Verify compilation**
+
+Run: `go build ./internal/builtin/...`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add internal/builtin/plugin.go
+git commit -m "feat(builtin): add BuiltinPlugin skeleton"
+```
+
+### Task 4: Wire Framework in main.go
+
+**Files:**
+- Modify: `cmd/acpclaw/main.go`
+- Modify: `cmd/acpclaw/app.go`
+
+- [ ] **Step 1: Update run() to use Framework**
+
+Replace `SetupApp` in `cmd/acpclaw/main.go`. The `BuiltinPlugin.Init()` method now builds all components that `SetupApp` previously built:
+
+- `buildAgentService()` creates `AcpAgentService` (or echo service), stores as `b.sessionMgr` and `b.prompter` (the concrete type implements both interfaces)
+- `buildTelegramChannel()` creates the Telegram bot, channel, and stores as `b.tgChannel`
+- Memory service and cron scheduler are initialized if enabled
+
+`run()` becomes:
+
+```go
+fw := framework.New()
+bp, err := builtin.NewPlugin(cfg, *echoMode)
+fw.Register(bp)
+fw.Init()
+ctx, stop := signal.NotifyContext(...)
+defer stop()
+return fw.Start(ctx)
+```
+
+Delete `SetupApp` and the `App` struct from `app.go`. Move the `buildXxx` helper functions into `BuiltinPlugin.Init()` as private methods.
+
+In Phase 2, `ProcessInbound` is connected but the full pipeline is not yet wired. Messages flow through the Framework but the `ActionExecutor` hook (BuiltinPlugin) delegates to the agent service's Prompt method directly. Command handling is added in Phase 3.
+
+- [ ] **Step 2: Verify compilation and manual test**
+
+Run: `go build ./cmd/acpclaw/`
+Manual test: run in echo mode, send a message, verify response.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add -A
+git commit -m "milestone: Phase 2 — channel layer migrated to Framework"
+```
+
+---
+
+## Chunk 3: Phase 3 — Command System Migration
+
+Extracts commands from dispatcher into standalone structs.
+
+### Task 1: Create builtin/commands/ — One file per command
+
+**Files:**
+- Create: `internal/builtin/commands/new.go`
+- Create: `internal/builtin/commands/reconnect.go`
+- Create: `internal/builtin/commands/cancel.go`
+- Create: `internal/builtin/commands/status.go`
+- Create: `internal/builtin/commands/session.go`
+- Create: `internal/builtin/commands/resume.go`
+- Create: `internal/builtin/commands/help.go`
+- Create: `internal/builtin/commands/start.go`
+- Create: `internal/builtin/commands/util.go`
+
+- [ ] **Step 1: Create shared utilities**
+
+Create `internal/builtin/commands/util.go` with helper functions extracted from `dispatcher/commands.go`:
+
+```go
+package commands
+
+import (
+	"log/slog"
+	"github.com/zhu327/acpclaw/internal/domain"
+)
+
+func replyText(resp domain.Replier, text string) {
+	if err := resp.Reply(domain.OutboundMessage{Text: text}); err != nil {
+		slog.Debug("reply failed (best effort)", "error", err)
+	}
+}
+
+func resolveWorkspace(args []string, defaultWs string) string {
+	ws := strings.TrimSpace(strings.Join(args, " "))
+	if ws == "" {
+		if defaultWs != "" {
+			return defaultWs
+		}
+		return "."
+	}
+	return ws
+}
+
+func convertToPromptInput(msg domain.InboundMessage) domain.PromptInput {
+	// Migrated from dispatcher/dispatcher.go convertToPromptInput
+	input := domain.PromptInput{Text: msg.Text}
+	for _, att := range msg.Attachments {
+		switch att.MediaType {
+		case "image":
+			input.Images = append(input.Images, domain.ImageData{
+				MIMEType: "image/jpeg", Data: att.Data, Name: att.FileName,
+			})
+		default:
+			fd := domain.FileData{MIMEType: att.MediaType, Data: att.Data, Name: att.FileName}
+			if unicode.utf8.Valid(att.Data) {
+				s := string(att.Data)
+				fd.TextContent = &s
+			}
+			if fd.MIMEType == "" { fd.MIMEType = "application/octet-stream" }
+			if fd.Name == "" { fd.Name = "attachment.bin" }
+			input.Files = append(input.Files, fd)
+		}
+	}
+	return input
+}
+```
+
+- [ ] **Step 2: Create each command struct**
+
+Each command file follows this pattern (example for `/new`):
+
+```go
+package commands
+
+import (
+	"context"
+	"fmt"
+	"github.com/zhu327/acpclaw/internal/domain"
+)
+
+type NewCommand struct {
+	sessionMgr  domain.SessionManager
+	defaultWs   string
+}
+
+func NewNewCommand(sm domain.SessionManager, defaultWs string) *NewCommand {
+	return &NewCommand{sessionMgr: sm, defaultWs: defaultWs}
+}
+
+func (c *NewCommand) Name() string        { return "new" }
+func (c *NewCommand) Description() string { return "Start a new session" }
+
+func (c *NewCommand) Execute(ctx context.Context, args []string, tc *domain.TurnContext) (*domain.Result, error) {
+	// Migrate logic from dispatcher.handleNew
+	workspace := resolveWorkspace(args, c.defaultWs)
+	if err := c.sessionMgr.NewSession(ctx, tc.Chat, workspace); err != nil {
+		return &domain.Result{Text: "❌ Failed to start session."}, nil
+	}
+	info := c.sessionMgr.ActiveSession(tc.Chat)
+	if info != nil {
+		return &domain.Result{Text: fmt.Sprintf("Session started: `%s` in `%s`", info.SessionID, info.Workspace)}, nil
+	}
+	return &domain.Result{Text: "Session started."}, nil
+}
+```
+
+Create similar files for each command, migrating logic from `dispatcher/commands.go`:
+- `help.go` — reads commands from `tc.State["commands"]`, generates dynamic help text
+- `start.go` — returns welcome message
+- `cancel.go` — calls `Prompter.Cancel()`
+- `status.go` — calls `SessionManager.ActiveSession()`
+- `session.go` — calls `SessionManager.ListSessions()`
+- `resume.go` — calls `SessionManager.ListSessions()` + `LoadSession()`
+- `reconnect.go` — calls `SessionManager.Reconnect()`
+
+- [ ] **Step 3: Write tests for each command**
+
+Create `internal/builtin/commands/new_test.go`, etc. with mock SessionManager/Prompter.
+
+- [ ] **Step 4: Run tests**
+
+Run: `go test ./internal/builtin/commands/... -v`
+Expected: all PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/builtin/commands/
+git commit -m "feat(builtin/commands): extract all commands from dispatcher"
+```
+
+### Task 2: Implement CommandProvider and MessageRouter in BuiltinPlugin
+
+**Files:**
+- Modify: `internal/builtin/plugin.go`
+
+- [ ] **Step 1: Add CommandProvider implementation**
+
+```go
+func (b *BuiltinPlugin) Commands() []domain.Command {
+	return []domain.Command{
+		commands.NewStartCommand(),
+		commands.NewHelpCommand(),
+		commands.NewNewCommand(b.sessionMgr, b.cfg.Agent.Workspace),
+		commands.NewSessionCommand(b.sessionMgr),
+		commands.NewResumeCommand(b.sessionMgr),
+		commands.NewCancelCommand(b.prompter),
+		commands.NewReconnectCommand(b.sessionMgr, b.cfg.Agent.Workspace),
+		commands.NewStatusCommand(b.sessionMgr),
+	}
+}
+```
+
+- [ ] **Step 2: Add MessageRouter implementation**
+
+```go
+func (b *BuiltinPlugin) RouteMessage(ctx context.Context, msg domain.InboundMessage, state domain.State) (domain.Action, error) {
+	text := strings.TrimSpace(msg.Text)
+	if strings.HasPrefix(text, "/") {
+		parts := strings.Fields(text[1:])
+		name := strings.ToLower(parts[0])
+		var args []string
+		if len(parts) > 1 {
+			args = parts[1:]
+		}
+		return domain.Action{Kind: domain.ActionCommand, Command: name, Args: args}, nil
+	}
+	return domain.Action{
+		Kind:  domain.ActionPrompt,
+		Input: convertToPromptInput(msg),
+	}, nil
+}
+```
+
+- [ ] **Step 3: Verify compilation and tests**
+
+Run: `go build ./... && go test ./... -v`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "milestone: Phase 3 — command system migrated to plugin"
+```
+
+---
+
+## Chunk 4: Phase 4 — Turn Lifecycle Migration
+
+The core migration: removes the dispatcher, implements the full pipeline.
+
+### Task 1: Implement SessionResolver in BuiltinPlugin
+
+**Files:**
+- Modify: `internal/builtin/plugin.go`
+
+- [ ] **Step 1: Add ResolveSession**
+
+Migrate the implicit session creation logic from `dispatcher.go Handle()`:
+
+```go
+func (b *BuiltinPlugin) ResolveSession(ctx context.Context, msg domain.InboundMessage) (string, error) {
+	info := b.sessionMgr.ActiveSession(msg.ChatRef)
+	if info != nil {
+		return info.SessionID, nil
+	}
+	workspace := b.cfg.Agent.Workspace
+	if workspace == "" {
+		workspace = "."
+	}
+	if err := b.sessionMgr.NewSession(ctx, msg.ChatRef, workspace); err != nil {
+		return "", err
+	}
+	info = b.sessionMgr.ActiveSession(msg.ChatRef)
+	if info != nil {
+		return info.SessionID, nil
+	}
+	return "", nil
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add -A && git commit -m "feat(builtin): implement SessionResolver hook"
+```
+
+### Task 2: Implement ActionExecutor with busy queue
+
+**Files:**
+- Modify: `internal/builtin/plugin.go` (or create `internal/builtin/executor.go`)
+
+- [ ] **Step 1: Migrate busy queue logic**
+
+Move `convMu`, `pendingByChat`, `queueBusyPrompt`, `popPending`, `runPromptLoop` from dispatcher to a new `Executor` struct in `internal/builtin/executor.go`. This struct implements `domain.ActionExecutor` and `domain.BusyHandler`.
+
+- [ ] **Step 2: Write tests**
+
+Test busy queue: when executor is busy, second message is queued. HandleBusySendNow cancels and processes queued message.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add -A && git commit -m "feat(builtin): implement ActionExecutor with busy queue"
+```
+
+### Task 3: Implement OutboundRenderer and OutboundDispatcher
+
+**Files:**
+- Modify: `internal/builtin/plugin.go`
+
+- [ ] **Step 1: Add render/dispatch implementations**
+
+```go
+func (b *BuiltinPlugin) RenderOutbound(ctx context.Context, result *domain.Result, state domain.State) ([]domain.OutboundMessage, error) {
+	if result.Reply == nil {
+		return nil, nil
+	}
+	return []domain.OutboundMessage{{
+		Text:   result.Reply.Text,
+		Images: result.Reply.Images,
+		Files:  result.Reply.Files,
+	}}, nil
+}
+
+func (b *BuiltinPlugin) DispatchOutbound(ctx context.Context, msg domain.OutboundMessage, resp domain.Responder) error {
+	return resp.Reply(msg)
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add -A && git commit -m "feat(builtin): implement OutboundRenderer and OutboundDispatcher"
+```
+
+### Task 4: Implement ErrorObserver
+
+- [ ] **Step 1: Add error handler**
+
+```go
+func (b *BuiltinPlugin) OnError(ctx context.Context, stage string, err error, msg domain.InboundMessage) {
+	slog.Error("turn error", "stage", stage, "chat", msg.ChatRef.CompositeKey(), "error", err)
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add -A && git commit -m "feat(builtin): implement ErrorObserver"
+```
+
+### Task 5: Switch ChatID to raw values
+
+**Files:**
+- Modify: `internal/builtin/channel/telegram/channel.go`
+- Modify: `cmd/acpclaw/app.go` (cron)
+- Modify: `internal/agent/service.go` (still in old location until Phase 6)
+
+- [ ] **Step 1: Update Telegram channel to set raw ChatID**
+
+Change `ChatRef.ChatID` from `"telegram:12345"` to `"12345"`. Update all internal maps in agent service to use `chat.CompositeKey()`.
+
+- [ ] **Step 2: Update agent service to use ChatRef**
+
+Replace all `chatID string` parameters with `chat domain.ChatRef`. Use `chat.CompositeKey()` for internal map keys (`liveByChat`, `sessionHistory`, `promptLocks`, `sessionLocks`).
+
+- [ ] **Step 3: Run all tests, fix failures**
+
+Run: `go test ./... -v`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A && git commit -m "refactor: switch to raw ChatID, use CompositeKey() for map keys"
+```
+
+### Task 6: Delete dispatcher package
+
+- [ ] **Step 1: Remove dispatcher**
+
+Delete `internal/dispatcher/` directory. Remove all imports of `dispatcher` package from `cmd/acpclaw/`.
+
+- [ ] **Step 2: Verify compilation and tests**
+
+Run: `go build ./... && go test ./...`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add -A && git commit -m "milestone: Phase 4 — dispatcher eliminated, full turn lifecycle active"
+```
+
+---
+
+## Chunk 5: Phase 5 — Memory and Cron Migration
+
+### Task 1: Memory as ContextLoader and StateSaver
+
+**Files:**
+- Move: `internal/memory/` → `internal/builtin/memory/`
+- Modify: `internal/builtin/plugin.go`
+
+- [ ] **Step 1: Move memory package**
+
+```bash
+mv internal/memory internal/builtin/memory
+```
+
+Update all import paths.
+
+- [ ] **Step 2: Implement ContextLoader**
+
+In BuiltinPlugin, implement `LoadContext` to inject memory context:
+
+```go
+func (b *BuiltinPlugin) LoadContext(ctx context.Context, sessionID string, state domain.State) error {
+	if b.memorySvc == nil || !b.cfg.Memory.FirstPromptContext {
+		return nil
+	}
+	memCtx, err := b.memorySvc.BuildSessionContext(ctx)
+	if err != nil {
+		return nil // non-fatal
+	}
+	state["memory_context"] = memCtx
+	return nil
+}
+```
+
+- [ ] **Step 3: Implement StateSaver**
+
+`SaveState` is called after each turn. It handles history persistence and auto-summarize. The turn's user input and agent reply are passed via `state["user_text"]` and `state["reply"]` (set by ActionExecutor before returning).
+
+```go
+func (b *BuiltinPlugin) SaveState(ctx context.Context, sessionID string, state domain.State) error {
+	if b.memorySvc == nil {
+		return nil
+	}
+	if userText, ok := state["user_text"].(string); ok && userText != "" {
+		_ = b.memorySvc.AppendHistory(sessionID, "user", userText)
+	}
+	if reply, ok := state["reply"].(*domain.AgentReply); ok && reply != nil && reply.Text != "" {
+		_ = b.memorySvc.AppendHistory(sessionID, "assistant", reply.Text)
+	}
+	return nil
+}
+```
+
+Auto-summarize is triggered by commands (`/new`, `/reconnect`, `/resume`) via the command's `Execute` method, not by `SaveState`. This matches the current behavior where `summarizeIfEnabled` is called explicitly before session changes.
+
+- [ ] **Step 4: Run tests**
+
+Run: `go test ./internal/builtin/... -v`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A && git commit -m "feat(builtin): migrate memory as ContextLoader/StateSaver"
+```
+
+### Task 2: Cron migration
+
+**Files:**
+- Move: `internal/cron/` → `internal/builtin/cron/`
+- Modify: `internal/builtin/plugin.go`
+
+- [ ] **Step 1: Move cron package and update imports**
+
+- [ ] **Step 2: Update cron trigger to use Framework.ProcessInbound**
+
+The cron scheduler's `OnTrigger` constructs an `InboundMessage` with raw `ChatRef` and a `BackgroundResponder`, then calls `Framework.ProcessInbound()`. The BuiltinPlugin stores a responder factory (provided by the Telegram channel during `Init`):
+
+```go
+scheduler.OnTrigger(func(job domain.CronJob) {
+	chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
+	resp := telegram.NewBackgroundResponder(b.tgBot, chatIDInt)
+	msg := domain.InboundMessage{
+		ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
+		Text:    job.Message,
+	}
+	fw.ProcessInbound(ctx, msg, resp)
+})
+```
+
+The `tgBot` reference is stored in BuiltinPlugin during `Init` alongside the channel construction.
+
+- [ ] **Step 3: Run tests**
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A && git commit -m "milestone: Phase 5 — memory and cron migrated to builtin"
+```
+
+---
+
+## Chunk 6: Phase 6 — Cleanup
+
+### Task 1: Move agent to builtin/agent/
+
+**Files:**
+- Move: `internal/agent/` → `internal/builtin/agent/`
+
+- [ ] **Step 1: Move and update imports**
+
+```bash
+mv internal/agent internal/builtin/agent
+```
+
+Update all import paths. Update agent service to implement the new split interfaces (`SessionManager`, `Prompter`, `PermissionHandler`, `ActivityObserver`).
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add -A && git commit -m "refactor: move agent to builtin/agent"
+```
+
+### Task 2: Move MCP to builtin/mcp/
+
+**Files:**
+- Move: `internal/mcp/` → `internal/builtin/mcp/`
+
+- [ ] **Step 1: Move and update imports**
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add -A && git commit -m "refactor: move mcp to builtin/mcp"
+```
+
+### Task 3: Simplify main.go
+
+**Files:**
+- Modify: `cmd/acpclaw/main.go`
+
+- [ ] **Step 1: Slim down main.go**
+
+Remove all `buildXxx` helper functions from `app.go`. The `run()` function becomes:
+
+```go
+func run() error {
+	flag.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
+	configPath := flag.String("config", "config.yaml", "Path to YAML config file")
+	echoMode := flag.Bool("echo", false, "Use echo mode for testing")
+	flag.Parse()
+
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	initLogging(cfg)
+
+	fw := framework.New()
+	bp, err := builtin.NewPlugin(cfg, *echoMode)
+	if err != nil {
+		return err
+	}
+	fw.Register(bp)
+	if err := fw.Init(); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return fw.Start(ctx)
+}
+```
+
+- [ ] **Step 2: Delete app.go**
+
+Remove `cmd/acpclaw/app.go` entirely.
+
+- [ ] **Step 3: Verify compilation and tests**
+
+Run: `go build ./... && go test ./...`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A && git commit -m "refactor: simplify main.go, delete app.go"
+```
+
+### Task 4: Delete old packages
+
+- [ ] **Step 1: Remove old package directories**
+
+```bash
+rm -rf internal/agent internal/channel internal/dispatcher internal/memory internal/cron internal/mcp
+```
+
+- [ ] **Step 2: Remove old AgentService interface**
+
+Remove the old `AgentService` interface from `domain/agent.go`, keeping only the split interfaces.
+
+- [ ] **Step 3: Clean up domain/channel.go**
+
+Remove `MessageHandler` (old signature), `AllowlistChecker` (moved to telegram package), and `Channel.Send` method. Update `Channel` interface to use `ctx` parameter in `Start`.
+
+- [ ] **Step 4: Final verification**
+
+Run: `go build ./... && go test ./...`
+
+- [ ] **Step 5: Manual test**
+
+Run in echo mode. Test: send message, /new, /help, /cancel, /status, /session.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A && git commit -m "milestone: Phase 6 — cleanup complete, architecture refactoring done"
+```
+
+---
