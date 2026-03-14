@@ -10,11 +10,11 @@ import (
 
 // StatusCommand handles /status.
 type StatusCommand struct {
-	sessionMgr *AgentAdapter
+	sessionMgr domain.SessionManager
 }
 
 // NewStatusCommand creates a StatusCommand.
-func NewStatusCommand(sm *AgentAdapter) *StatusCommand {
+func NewStatusCommand(sm domain.SessionManager) *StatusCommand {
 	return &StatusCommand{sessionMgr: sm}
 }
 

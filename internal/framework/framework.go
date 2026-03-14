@@ -77,12 +77,12 @@ func (f *Framework) Start(ctx context.Context) error {
 	for _, ch := range f.channels {
 		ch := ch
 		g.Go(func() error {
-			handler := func(msg domain.InboundMessage, resp domain.Responder) {
-				if err := f.ProcessInbound(gCtx, msg, resp); err != nil {
-					slog.Error("ProcessInbound failed", "chat", msg.ChatRef.CompositeKey(), "error", err)
+			handler := func(msgCtx context.Context, msg domain.InboundMessage, resp domain.Responder) {
+				if err := f.ProcessInbound(msgCtx, msg, resp); err != nil {
+					slog.Error("ProcessInbound failed", "chat", msg.CompositeKey(), "error", err)
 				}
 			}
-			return ch.Start(handler)
+			return ch.Start(gCtx, handler)
 		})
 	}
 	return g.Wait()
@@ -90,7 +90,7 @@ func (f *Framework) Start(ctx context.Context) error {
 
 // ProcessInbound executes the 7-step turn lifecycle pipeline.
 func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessage, resp domain.Responder) (retErr error) {
-	key := msg.ChatRef.CompositeKey()
+	key := msg.CompositeKey()
 	f.responders.Store(key, resp)
 	defer f.responders.Delete(key)
 
@@ -132,15 +132,7 @@ func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessag
 		return fmt.Errorf("route message: %w", err)
 	}
 
-	var action domain.Action
-	if actionResult != nil {
-		action = actionResult.(domain.Action)
-	} else {
-		action = domain.Action{
-			Kind:  domain.ActionPrompt,
-			Input: domain.PromptInput{Text: msg.Text},
-		}
-	}
+	action := defaultAction(msg, actionResult)
 
 	tc := &domain.TurnContext{
 		Chat:      msg.ChatRef,
@@ -150,7 +142,7 @@ func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessag
 		State:     state,
 	}
 
-	// 5. SaveState (deferred, always runs)
+	// 4. SaveState (deferred, always runs after execute)
 	defer func() {
 		saveErrs := CallAll[domain.StateSaver](f.registry, func(h domain.StateSaver) error {
 			return h.SaveState(ctx, sessionID, state)
@@ -160,43 +152,56 @@ func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessag
 		}
 	}()
 
-	// 4. ExecuteAction
-	var result *domain.Result
+	// 5. ExecuteAction
+	result, err := f.executeAction(ctx, action, tc)
+	if err != nil {
+		return err
+	}
+	if result == nil || result.SuppressOutbound {
+		return nil
+	}
+
+	// 6. RenderOutbound + 7. DispatchOutbound
+	f.renderAndDispatch(ctx, result, state, resp)
+	return nil
+}
+
+func (f *Framework) executeAction(ctx context.Context, action domain.Action, tc *domain.TurnContext) (*domain.Result, error) {
 	if action.Kind == domain.ActionCommand {
 		cmd, ok := f.commands[action.Command]
 		if !ok {
-			result = &domain.Result{Text: "Unknown command: /" + action.Command}
-		} else {
-			result, err = cmd.Execute(ctx, action.Args, tc)
-			if err != nil {
-				return fmt.Errorf("execute command %s: %w", action.Command, err)
-			}
+			return &domain.Result{Text: "Unknown command: /" + action.Command}, nil
 		}
-	} else {
-		execResult, err := CallFirst[domain.ActionExecutor](f.registry, func(h domain.ActionExecutor) (any, error) {
-			return h.ExecuteAction(ctx, action, tc)
-		})
+		result, err := cmd.Execute(ctx, action.Args, tc)
 		if err != nil {
-			return fmt.Errorf("execute action: %w", err)
+			return nil, fmt.Errorf("execute command %s: %w", action.Command, err)
 		}
-		if execResult != nil {
-			result = execResult.(*domain.Result)
-		}
+		return result, nil
 	}
-
-	if result == nil {
-		return nil
+	execResult, err := CallFirst[domain.ActionExecutor](f.registry, func(h domain.ActionExecutor) (any, error) {
+		return h.ExecuteAction(ctx, action, tc)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("execute action: %w", err)
 	}
-
-	// 6. RenderOutbound
-	if result.SuppressOutbound {
-		return nil
+	if execResult == nil {
+		return nil, nil
 	}
+	return execResult.(*domain.Result), nil
+}
 
+func defaultAction(msg domain.InboundMessage, actionResult any) domain.Action {
+	if actionResult != nil {
+		return actionResult.(domain.Action)
+	}
+	return domain.Action{
+		Kind:  domain.ActionPrompt,
+		Input: domain.PromptInput{Text: msg.Text},
+	}
+}
+
+func (f *Framework) renderAndDispatch(ctx context.Context, result *domain.Result, state domain.State, resp domain.Responder) {
 	var outbounds []domain.OutboundMessage
-	if result.Text != "" {
-		outbounds = append(outbounds, domain.OutboundMessage{Text: result.Text})
-	}
 	CallAll[domain.OutboundRenderer](f.registry, func(h domain.OutboundRenderer) error {
 		msgs, err := h.RenderOutbound(ctx, result, state)
 		if err != nil {
@@ -205,15 +210,14 @@ func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessag
 		outbounds = append(outbounds, msgs...)
 		return nil
 	})
-
-	// 7. DispatchOutbound
+	if len(outbounds) == 0 && result.Text != "" {
+		outbounds = append(outbounds, domain.OutboundMessage{Text: result.Text})
+	}
 	for _, out := range outbounds {
 		CallAll[domain.OutboundDispatcher](f.registry, func(h domain.OutboundDispatcher) error {
 			return h.DispatchOutbound(ctx, out, resp)
 		})
 	}
-
-	return nil
 }
 
 // GetResponder returns the active Responder for a chat, or nil if no turn is active.
@@ -237,7 +241,7 @@ func (f *Framework) RespondPermission(reqID string, decision domain.PermissionDe
 	default:
 	}
 	if decision == domain.PermissionAlways {
-		CallFirst[domain.PermissionHandler](f.registry, func(h domain.PermissionHandler) (any, error) {
+		_, _ = CallFirst[domain.PermissionHandler](f.registry, func(h domain.PermissionHandler) (any, error) {
 			h.SetSessionPermissionMode(pe.chat, domain.PermissionModeApprove)
 			return nil, nil
 		})
@@ -248,7 +252,10 @@ func (f *Framework) RespondPermission(reqID string, decision domain.PermissionDe
 func (f *Framework) HandleBusySendNow(chat domain.ChatRef, token string) (bool, error) {
 	result, err := CallFirst[domain.BusyHandler](f.registry, func(h domain.BusyHandler) (any, error) {
 		ok, err := h.HandleBusySendNow(chat, token)
-		return ok, err
+		if !ok || err != nil {
+			return nil, err
+		}
+		return ok, nil
 	})
 	if err != nil {
 		return false, err

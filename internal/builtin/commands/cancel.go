@@ -9,11 +9,11 @@ import (
 
 // CancelCommand handles /cancel.
 type CancelCommand struct {
-	prompter *AgentAdapter
+	prompter domain.Prompter
 }
 
 // NewCancelCommand creates a CancelCommand.
-func NewCancelCommand(p *AgentAdapter) *CancelCommand {
+func NewCancelCommand(p domain.Prompter) *CancelCommand {
 	return &CancelCommand{prompter: p}
 }
 

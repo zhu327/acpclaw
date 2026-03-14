@@ -44,6 +44,9 @@ func NewTelegramResponder(bot *telego.Bot, chatID int64, msgID int) *TelegramRes
 	return &TelegramResponder{bot: bot, chatID: chatID, msgID: msgID}
 }
 
+// ChannelKind returns the channel kind.
+func (r *TelegramResponder) ChannelKind() string { return "telegram" }
+
 // BackgroundResponder implements domain.Responder for background tasks.
 type BackgroundResponder struct {
 	bot    *telego.Bot
@@ -54,6 +57,9 @@ type BackgroundResponder struct {
 func NewBackgroundResponder(bot *telego.Bot, chatID int64) *BackgroundResponder {
 	return &BackgroundResponder{bot: bot, chatID: chatID}
 }
+
+// ChannelKind returns the channel kind.
+func (r *BackgroundResponder) ChannelKind() string { return "telegram" }
 
 // Reply sends an outbound message to the chat.
 func (r *BackgroundResponder) Reply(msg domain.OutboundMessage) error {
@@ -352,13 +358,13 @@ func formatActivityPath(raw, workspace string) string {
 func formatActivityDetail(block domain.ActivityBlock) ([]string, string) {
 	detail := block.Detail
 	switch block.Kind {
-	case "execute":
+	case domain.ActivityExecute:
 		if runParts, ok := formatRunCommands(detail); ok {
 			return runParts, ""
 		}
-	case "read", "edit":
+	case domain.ActivityRead, domain.ActivityEdit:
 		prefix := "Read "
-		if block.Kind == "edit" {
+		if block.Kind == domain.ActivityEdit {
 			prefix = "Edit "
 		}
 		if strings.HasPrefix(detail, prefix) {
@@ -371,7 +377,7 @@ func formatActivityDetail(block domain.ActivityBlock) ([]string, string) {
 
 func formatActivityMessage(block domain.ActivityBlock) string {
 	label := block.Label
-	if block.Kind == "search" {
+	if block.Kind == domain.ActivitySearch {
 		if sl := searchSourceLabel(block.Detail, block.Text); sl != "" {
 			label = sl
 		}

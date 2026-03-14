@@ -97,28 +97,32 @@ func run() error {
 	bp.StartBackgroundTasks(ctx)
 
 	if cfg.Cron.Enabled {
-		cronDir := config.GetAcpclawCronDir()
-		cronStore := cron.NewStore(cronDir)
-		scheduler := cron.NewScheduler(cronStore, 30*time.Second)
-		scheduler.OnTrigger(func(job domain.CronJob) {
-			if job.Channel != "telegram" {
-				slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
-				return
-			}
-			chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
-			resp := telegram.NewBackgroundResponder(bot, chatIDInt)
-			msg := domain.InboundMessage{
-				ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
-				Text:    job.Message,
-			}
-			_ = fw.ProcessInbound(ctx, msg, resp)
-		})
-		go scheduler.Start(ctx)
-		slog.Info("cron scheduler started", "dir", cronDir)
+		startCronScheduler(ctx, cfg, bot, fw)
 	}
 
 	slog.Info("bot started", "workspace", cfg.Agent.Workspace)
 	return fw.Start(ctx)
+}
+
+func startCronScheduler(ctx context.Context, cfg *config.Config, bot *telego.Bot, fw *framework.Framework) {
+	cronDir := config.GetAcpclawCronDir()
+	cronStore := cron.NewStore(cronDir)
+	scheduler := cron.NewScheduler(cronStore, 30*time.Second)
+	scheduler.OnTrigger(func(job domain.CronJob) {
+		if job.Channel != "telegram" {
+			slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
+			return
+		}
+		chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
+		resp := telegram.NewBackgroundResponder(bot, chatIDInt)
+		msg := domain.InboundMessage{
+			ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
+			Text:    job.Message,
+		}
+		_ = fw.ProcessInbound(ctx, msg, resp)
+	})
+	go scheduler.Start(ctx)
+	slog.Info("cron scheduler started", "dir", cronDir)
 }
 
 func loadConfig(path string) (*config.Config, error) {

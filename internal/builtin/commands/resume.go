@@ -43,12 +43,12 @@ func (s *resumeChoicesStore) Get(chat domain.ChatRef, index int) (*domain.Sessio
 
 // ResumeCommand handles /resume.
 type ResumeCommand struct {
-	sessionMgr *AgentAdapter
+	sessionMgr domain.SessionManager
 	store      ResumeChoicesStore
 }
 
 // NewResumeCommand creates a ResumeCommand.
-func NewResumeCommand(sm *AgentAdapter, store ResumeChoicesStore) *ResumeCommand {
+func NewResumeCommand(sm domain.SessionManager, store ResumeChoicesStore) *ResumeCommand {
 	return &ResumeCommand{sessionMgr: sm, store: store}
 }
 

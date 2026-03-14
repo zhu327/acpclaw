@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/zhu327/acpclaw/internal/domain"
@@ -21,24 +21,24 @@ type pendingPrompt struct {
 
 // promptExecutor handles the busy queue and prompt loop for ActionExecutor.
 type promptExecutor struct {
-	agentSvc       domain.AgentService
-	convMu         sync.Map // chatID -> *sync.Mutex
-	pendingByChat  map[string]*pendingPrompt
-	pendingMu      sync.Mutex
-	cancelRequested sync.Map // chatID -> struct{}
-	fw             interface {
-		ProcessInbound(ctx context.Context, msg domain.InboundMessage, resp domain.Responder) error
-	}
-	firstPromptPrefix func(chatID string) string
+	sessionMgr        domain.SessionManager
+	prompter          domain.Prompter
+	convMu            sync.Map // chatID -> *sync.Mutex
+	pendingByChat     map[string]*pendingPrompt
+	pendingMu         sync.Mutex
+	cancelRequested   sync.Map // chatID -> struct{}
+	firstPromptPrefix func(chat domain.ChatRef) string
 }
 
-func newPromptExecutor(agentSvc domain.AgentService, fw interface {
-	ProcessInbound(ctx context.Context, msg domain.InboundMessage, resp domain.Responder) error
-}, firstPromptPrefix func(chatID string) string) *promptExecutor {
+func newPromptExecutor(
+	sessionMgr domain.SessionManager,
+	prompter domain.Prompter,
+	firstPromptPrefix func(chat domain.ChatRef) string,
+) *promptExecutor {
 	return &promptExecutor{
-		agentSvc:         agentSvc,
-		pendingByChat:    make(map[string]*pendingPrompt),
-		fw:               fw,
+		sessionMgr:        sessionMgr,
+		prompter:          prompter,
+		pendingByChat:     make(map[string]*pendingPrompt),
 		firstPromptPrefix: firstPromptPrefix,
 	}
 }
@@ -95,10 +95,10 @@ func (e *promptExecutor) HandleBusySendNow(chat domain.ChatRef, token string) (b
 		e.pendingMu.Unlock()
 		return false, nil
 	}
+	e.cancelRequested.Store(chatID, struct{}{})
 	e.pendingMu.Unlock()
 
-	e.cancelRequested.Store(chatID, struct{}{})
-	if err := e.agentSvc.Cancel(context.Background(), chatID); err != nil {
+	if err := e.prompter.Cancel(context.Background(), chat); err != nil {
 		e.cancelRequested.Delete(chatID)
 		return false, err
 	}
@@ -108,27 +108,27 @@ func (e *promptExecutor) HandleBusySendNow(chat domain.ChatRef, token string) (b
 func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input domain.PromptInput, resp domain.Responder, chat domain.ChatRef, isFirstTurn bool, state domain.State) *domain.Result {
 	for {
 		if isFirstTurn && e.firstPromptPrefix != nil {
-			if prefix := e.firstPromptPrefix(chatID); prefix != "" {
+			if prefix := e.firstPromptPrefix(chat); prefix != "" {
 				input.Text = prefix + "\n\n---\n\n" + input.Text
 			}
 			isFirstTurn = false
 		}
-
 		if state != nil {
 			state["user_text"] = input.Text
 		}
 
-		reply, err := e.agentSvc.Prompt(ctx, chatID, input)
+		reply, err := e.prompter.Prompt(ctx, chat, input)
 		if err != nil {
 			if _, wasCancelled := e.cancelRequested.LoadAndDelete(chatID); !wasCancelled {
+				slog.Error("prompt failed", "chat", chatID, "error", err)
 				return &domain.Result{Text: "❌ Failed to process your request."}
 			}
-		}
-		if state != nil && reply != nil {
+		} else if state != nil && reply != nil {
 			state["reply"] = reply
 		}
+
 		if reply != nil && (reply.Text != "" || len(reply.Images) > 0 || len(reply.Files) > 0) {
-			e.sendReply(resp, reply)
+			return &domain.Result{Reply: reply}
 		}
 
 		p := e.popPending(chatID)
@@ -137,16 +137,10 @@ func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input
 		}
 		_ = resp.ClearBusyNotification(p.notifyMsgID)
 		input = p.input
-		state["reply"] = nil
+		if state != nil {
+			state["reply"] = nil
+		}
 	}
-}
-
-func (e *promptExecutor) sendReply(resp domain.Responder, reply *domain.AgentReply) {
-	_ = resp.Reply(domain.OutboundMessage{
-		Text:   reply.Text,
-		Images: reply.Images,
-		Files:  reply.Files,
-	})
 }
 
 // executePrompt runs the prompt with busy queue logic.
@@ -164,24 +158,10 @@ func (e *promptExecutor) executePrompt(ctx context.Context, action domain.Action
 	}
 	defer lock.Unlock()
 
-	isFirstTurn := e.agentSvc.ActiveSession(chatID) == nil
+	isFirstTurn := e.sessionMgr.ActiveSession(tc.Chat) == nil
 	return e.runPromptLoop(ctx, chatID, action.Input, tc.Responder, tc.Chat, isFirstTurn, tc.State)
 }
 
-func parseCompositeChatID(chatID string) (channel, rawID string) {
-	if ch, raw, ok := strings.Cut(chatID, ":"); ok {
-		return ch, raw
-	}
-	return "", chatID
-}
-
-func buildSessionInfoBlock(chatID string, channelName string) string {
-	channel, rawChatID := parseCompositeChatID(chatID)
-	if channel == "" {
-		channel = channelName
-		if channel == "" {
-			channel = "telegram"
-		}
-	}
-	return "[Session Info]\nchannel: " + channel + "\nchat_id: " + rawChatID + "\n[/Session Info]"
+func buildSessionInfoBlock(chat domain.ChatRef) string {
+	return "[Session Info]\nchannel: " + chat.ChannelKind + "\nchat_id: " + chat.ChatID + "\n[/Session Info]"
 }

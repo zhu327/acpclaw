@@ -1,6 +1,10 @@
 package framework
 
-import "github.com/zhu327/acpclaw/internal/domain"
+import (
+	"log/slog"
+
+	"github.com/zhu327/acpclaw/internal/domain"
+)
 
 // Plugin is the base interface all plugins must implement.
 type Plugin interface {
@@ -18,7 +22,14 @@ func NewHookRegistry() *HookRegistry {
 }
 
 // Register adds a plugin. Later registrations have higher priority.
+// Duplicate plugin names are rejected with a warning.
 func (r *HookRegistry) Register(p Plugin) {
+	for _, existing := range r.plugins {
+		if existing.Name() == p.Name() {
+			slog.Warn("duplicate plugin registration ignored", "name", p.Name())
+			return
+		}
+	}
 	r.plugins = append(r.plugins, p)
 }
 
@@ -28,8 +39,8 @@ func (r *HookRegistry) Plugins() []Plugin {
 }
 
 // CallFirst iterates plugins in reverse registration order (latest first),
-// calls fn on each that implements T, returns the first non-zero result.
-// Returns (nil, nil) if no implementor returns a non-zero value.
+// calls fn on each that implements T, returns the first non-nil result.
+// Callers must return nil to indicate "no result".
 func CallFirst[T any](r *HookRegistry, fn func(T) (any, error)) (any, error) {
 	for i := len(r.plugins) - 1; i >= 0; i-- {
 		if h, ok := r.plugins[i].(T); ok {
@@ -37,7 +48,7 @@ func CallFirst[T any](r *HookRegistry, fn func(T) (any, error)) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			if result != nil && result != "" {
+			if result != nil {
 				return result, nil
 			}
 		}
@@ -65,7 +76,11 @@ func CallAllFaultIsolated[T any](r *HookRegistry, fn func(T) error) {
 	for _, p := range r.plugins {
 		if h, ok := p.(T); ok {
 			func() {
-				defer func() { recover() }()
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("panic in fault-isolated hook", "plugin", p.Name(), "panic", r)
+					}
+				}()
 				_ = fn(h)
 			}()
 		}
@@ -73,7 +88,7 @@ func CallAllFaultIsolated[T any](r *HookRegistry, fn func(T) error) {
 }
 
 // InitPlugins calls Init(fw) on any plugin implementing domain.PluginInitializer.
-func (r *HookRegistry) InitPlugins(fw any) error {
+func (r *HookRegistry) InitPlugins(fw domain.PluginContext) error {
 	for _, p := range r.plugins {
 		if pi, ok := p.(domain.PluginInitializer); ok {
 			if err := pi.Init(fw); err != nil {

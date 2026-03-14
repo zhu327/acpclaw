@@ -10,15 +10,20 @@ import (
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
-var _ domain.AgentService = (*EchoAgentService)(nil)
+var (
+	_ domain.SessionManager    = (*EchoAgentService)(nil)
+	_ domain.Prompter          = (*EchoAgentService)(nil)
+	_ domain.PermissionHandler = (*EchoAgentService)(nil)
+	_ domain.ActivityObserver  = (*EchoAgentService)(nil)
+)
 
-// EchoAgentService is a minimal AgentService implementation for development and testing.
+// EchoAgentService is a minimal agent implementation for development and testing.
 type EchoAgentService struct {
 	mu                sync.RWMutex
 	sessions          map[string]domain.SessionInfo
 	sessionHistory    map[string][]domain.SessionInfo
-	activityHandler   func(chatID string, block domain.ActivityBlock)
-	permissionHandler func(chatID string, req domain.PermissionRequest) <-chan domain.PermissionResponse
+	activityHandler   func(chat domain.ChatRef, block domain.ActivityBlock)
+	permissionHandler func(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse
 }
 
 // NewEchoAgentService creates a new EchoAgentService.
@@ -30,29 +35,31 @@ func NewEchoAgentService() *EchoAgentService {
 }
 
 // NewSession creates a new session with a generated ID.
-func (e *EchoAgentService) NewSession(_ context.Context, chatID string, workspace string) error {
+func (e *EchoAgentService) NewSession(_ context.Context, chat domain.ChatRef, workspace string) error {
+	key := chat.CompositeKey()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	sessionID := fmt.Sprintf("echo-%s-%d", chatID, time.Now().UnixNano())
+	sessionID := fmt.Sprintf("echo-%s-%d", key, time.Now().UnixNano())
 	info := domain.SessionInfo{SessionID: sessionID, Workspace: workspace, UpdatedAt: time.Now()}
-	e.sessions[chatID] = info
-	e.sessionHistory[chatID] = upsertCappedSessionHistory(e.sessionHistory[chatID], info)
+	e.sessions[key] = info
+	e.sessionHistory[key] = upsertCappedSessionHistory(e.sessionHistory[key], info)
 	return nil
 }
 
 // LoadSession delegates to NewSession (ignores sessionID, starts fresh).
-func (e *EchoAgentService) LoadSession(ctx context.Context, chatID string, _ string, workspace string) error {
-	return e.NewSession(ctx, chatID, workspace)
+func (e *EchoAgentService) LoadSession(ctx context.Context, chat domain.ChatRef, _ string, workspace string) error {
+	return e.NewSession(ctx, chat, workspace)
 }
 
 // ListSessions returns the session history for the chat, or ErrNoActiveProcess if no active session.
-func (e *EchoAgentService) ListSessions(_ context.Context, chatID string) ([]domain.SessionInfo, error) {
+func (e *EchoAgentService) ListSessions(_ context.Context, chat domain.ChatRef) ([]domain.SessionInfo, error) {
+	key := chat.CompositeKey()
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if _, ok := e.sessions[chatID]; !ok {
+	if _, ok := e.sessions[key]; !ok {
 		return nil, domain.ErrNoActiveProcess
 	}
-	history := e.sessionHistory[chatID]
+	history := e.sessionHistory[key]
 	if len(history) == 0 {
 		return nil, nil
 	}
@@ -61,17 +68,16 @@ func (e *EchoAgentService) ListSessions(_ context.Context, chatID string) ([]dom
 	return result, nil
 }
 
-// Prompt returns an domain.AgentReply echoing the input.
-// When input contains "[ask]", trigger a permission request to simulate the ask flow:
-//   - If permissionHandler is not set, reply directly and note the missing handler.
-//   - If permissionHandler is set, wait for the response and append the decision to the reply.
+// Prompt returns an AgentReply echoing the input.
+// When input contains "[ask]", trigger a permission request to simulate the ask flow.
 func (e *EchoAgentService) Prompt(
 	_ context.Context,
-	chatID string,
+	chat domain.ChatRef,
 	input domain.PromptInput,
 ) (*domain.AgentReply, error) {
+	key := chat.CompositeKey()
 	e.mu.RLock()
-	info, ok := e.sessions[chatID]
+	info, ok := e.sessions[key]
 	handler := e.permissionHandler
 	e.mu.RUnlock()
 	if !ok {
@@ -88,10 +94,9 @@ func (e *EchoAgentService) Prompt(
 		text += fmt.Sprintf(" [images=%d files=%d]", len(input.Images), len(input.Files))
 	}
 
-	// When input includes [ask], trigger a permission request.
 	if strings.Contains(input.Text, "[ask]") {
 		req := domain.PermissionRequest{
-			ID:          fmt.Sprintf("echo-perm-%s-%d", chatID, time.Now().UnixNano()),
+			ID:          fmt.Sprintf("echo-perm-%s-%d", key, time.Now().UnixNano()),
 			Tool:        "echo_tool",
 			Description: "EchoAgentService 请求执行 echo_tool 权限",
 			Input:       map[string]any{"text": input.Text},
@@ -105,7 +110,7 @@ func (e *EchoAgentService) Prompt(
 		if handler == nil {
 			text += " [permission asked: no handler set]"
 		} else {
-			ch := handler(chatID, req)
+			ch := handler(chat, req)
 			resp := <-ch
 			text += fmt.Sprintf(" [permission asked: decision=%s]", string(resp.Decision))
 		}
@@ -115,22 +120,24 @@ func (e *EchoAgentService) Prompt(
 }
 
 // Cancel is a no-op.
-func (e *EchoAgentService) Cancel(_ context.Context, _ string) error { return nil }
+func (e *EchoAgentService) Cancel(_ context.Context, _ domain.ChatRef) error { return nil }
 
 // Reconnect clears the session and history, then creates a new one.
-func (e *EchoAgentService) Reconnect(ctx context.Context, chatID string, workspace string) error {
+func (e *EchoAgentService) Reconnect(ctx context.Context, chat domain.ChatRef, workspace string) error {
+	key := chat.CompositeKey()
 	e.mu.Lock()
-	delete(e.sessions, chatID)
-	delete(e.sessionHistory, chatID)
+	delete(e.sessions, key)
+	delete(e.sessionHistory, key)
 	e.mu.Unlock()
-	return e.NewSession(ctx, chatID, workspace)
+	return e.NewSession(ctx, chat, workspace)
 }
 
 // ActiveSession returns the session info for the chat, or nil.
-func (e *EchoAgentService) ActiveSession(chatID string) *domain.SessionInfo {
+func (e *EchoAgentService) ActiveSession(chat domain.ChatRef) *domain.SessionInfo {
+	key := chat.CompositeKey()
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	info, ok := e.sessions[chatID]
+	info, ok := e.sessions[key]
 	if !ok {
 		return nil
 	}
@@ -146,7 +153,7 @@ func (e *EchoAgentService) Shutdown() {
 }
 
 // SetActivityHandler stores the handler.
-func (e *EchoAgentService) SetActivityHandler(fn func(chatID string, block domain.ActivityBlock)) {
+func (e *EchoAgentService) SetActivityHandler(fn func(chat domain.ChatRef, block domain.ActivityBlock)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.activityHandler = fn
@@ -154,7 +161,7 @@ func (e *EchoAgentService) SetActivityHandler(fn func(chatID string, block domai
 
 // SetPermissionHandler stores the handler.
 func (e *EchoAgentService) SetPermissionHandler(
-	fn func(chatID string, req domain.PermissionRequest) <-chan domain.PermissionResponse,
+	fn func(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse,
 ) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -162,4 +169,4 @@ func (e *EchoAgentService) SetPermissionHandler(
 }
 
 // SetSessionPermissionMode is a no-op.
-func (e *EchoAgentService) SetSessionPermissionMode(_ string, _ domain.PermissionMode) {}
+func (e *EchoAgentService) SetSessionPermissionMode(_ domain.ChatRef, _ domain.PermissionMode) {}

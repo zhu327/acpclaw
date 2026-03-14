@@ -9,12 +9,12 @@ import (
 
 // ReconnectCommand handles /reconnect.
 type ReconnectCommand struct {
-	sessionMgr *AgentAdapter
+	sessionMgr domain.SessionManager
 	defaultWs  string
 }
 
 // NewReconnectCommand creates a ReconnectCommand.
-func NewReconnectCommand(sm *AgentAdapter, defaultWs string) *ReconnectCommand {
+func NewReconnectCommand(sm domain.SessionManager, defaultWs string) *ReconnectCommand {
 	return &ReconnectCommand{sessionMgr: sm, defaultWs: defaultWs}
 }
 

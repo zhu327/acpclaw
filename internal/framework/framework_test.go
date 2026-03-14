@@ -14,19 +14,18 @@ type mockChannel struct {
 }
 
 func (c *mockChannel) Kind() string { return c.kind }
-func (c *mockChannel) Start(handler domain.MessageHandler) error {
+func (c *mockChannel) Start(ctx context.Context, handler domain.MessageHandler) error {
 	c.started = true
 	c.handler = handler
 	return nil
 }
 func (c *mockChannel) Stop() error { return nil }
-func (c *mockChannel) Send(chatID string, msg domain.OutboundMessage) error { return nil }
 
 type channelPlugin struct {
 	channels []domain.Channel
 }
 
-func (p *channelPlugin) Name() string              { return "test-channel" }
+func (p *channelPlugin) Name() string               { return "test-channel" }
 func (p *channelPlugin) Channels() []domain.Channel { return p.channels }
 
 func TestFramework_Init_CollectsChannels(t *testing.T) {

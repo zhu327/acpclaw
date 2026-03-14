@@ -9,12 +9,12 @@ import (
 
 // NewCommand handles /new.
 type NewCommand struct {
-	sessionMgr *AgentAdapter
+	sessionMgr domain.SessionManager
 	defaultWs  string
 }
 
 // NewNewCommand creates a NewCommand.
-func NewNewCommand(sm *AgentAdapter, defaultWs string) *NewCommand {
+func NewNewCommand(sm domain.SessionManager, defaultWs string) *NewCommand {
 	return &NewCommand{sessionMgr: sm, defaultWs: defaultWs}
 }
 

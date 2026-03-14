@@ -34,7 +34,7 @@ type TelegramChannel struct {
 	cfg              ChannelConfig
 	updates          <-chan telego.Update
 	callbacks        FrameworkCallbacks
-	allowlistChecker domain.AllowlistChecker
+	allowlistChecker AllowlistChecker
 }
 
 var _ domain.Channel = (*TelegramChannel)(nil)
@@ -45,7 +45,7 @@ func NewTelegramChannel(
 	updates <-chan telego.Update,
 	cfg ChannelConfig,
 	callbacks FrameworkCallbacks,
-	allowlistChecker domain.AllowlistChecker,
+	allowlistChecker AllowlistChecker,
 ) *TelegramChannel {
 	return &TelegramChannel{
 		bot:              bot,
@@ -60,26 +60,26 @@ func NewTelegramChannel(
 func (c *TelegramChannel) Kind() string { return "telegram" }
 
 // Start registers handlers and begins processing updates.
-func (c *TelegramChannel) Start(handler domain.MessageHandler) error {
+func (c *TelegramChannel) Start(ctx context.Context, handler domain.MessageHandler) error {
 	var err error
 	c.handler, err = th.NewBotHandler(c.bot, c.updates)
 	if err != nil {
 		return fmt.Errorf("create bot handler: %w", err)
 	}
 
-	c.handler.HandleCallbackQuery(func(ctx *th.Context, query telego.CallbackQuery) error {
-		return c.handlePermissionCallback(ctx, query)
+	c.handler.HandleCallbackQuery(func(thCtx *th.Context, query telego.CallbackQuery) error {
+		return c.handlePermissionCallback(thCtx, query)
 	}, th.CallbackDataPrefix("perm|"))
 
-	c.handler.HandleCallbackQuery(func(ctx *th.Context, query telego.CallbackQuery) error {
-		return c.handleBusyCallback(ctx, query)
+	c.handler.HandleCallbackQuery(func(thCtx *th.Context, query telego.CallbackQuery) error {
+		return c.handleBusyCallback(thCtx, query)
 	}, th.CallbackDataPrefix("busy|"))
 
-	c.handler.HandleCallbackQuery(func(ctx *th.Context, query telego.CallbackQuery) error {
-		return c.handleResumeCallback(ctx, query)
+	c.handler.HandleCallbackQuery(func(thCtx *th.Context, query telego.CallbackQuery) error {
+		return c.handleResumeCallback(thCtx, query)
 	}, th.CallbackDataPrefix("resume|"))
 
-	c.handler.HandleMessage(func(ctx *th.Context, msg telego.Message) error {
+	c.handler.HandleMessage(func(thCtx *th.Context, msg telego.Message) error {
 		if msg.From == nil {
 			return nil
 		}
@@ -88,13 +88,13 @@ func (c *TelegramChannel) Start(handler domain.MessageHandler) error {
 			return nil
 		}
 
-		inbound := c.convertInbound(ctx, msg)
+		inbound := c.convertInbound(thCtx, msg)
 		if inbound.Text == "" && len(inbound.Attachments) == 0 {
 			return nil
 		}
 
 		resp := NewTelegramResponder(c.bot, msg.Chat.ID, msg.MessageID)
-		handler(inbound, resp)
+		handler(ctx, inbound, resp)
 		return nil
 	}, th.AnyMessage())
 
@@ -107,20 +107,6 @@ func (c *TelegramChannel) Stop() error {
 		_ = c.handler.Stop()
 	}
 	return nil
-}
-
-// Send sends an OutboundMessage to the given chatID.
-// chatID may be a composite key like "telegram:12345"; the prefix is stripped.
-func (c *TelegramChannel) Send(chatID string, msg domain.OutboundMessage) error {
-	raw := chatID
-	if _, after, ok := strings.Cut(chatID, ":"); ok {
-		raw = after
-	}
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid chatID %q: %w", chatID, err)
-	}
-	return sendOutbound(c.bot, id, msg)
 }
 
 func (c *TelegramChannel) convertInbound(ctx *th.Context, msg telego.Message) domain.InboundMessage {

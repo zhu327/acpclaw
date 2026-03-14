@@ -11,11 +11,11 @@ import (
 
 // SessionCommand handles /session.
 type SessionCommand struct {
-	sessionMgr *AgentAdapter
+	sessionMgr domain.SessionManager
 }
 
 // NewSessionCommand creates a SessionCommand.
-func NewSessionCommand(sm *AgentAdapter) *SessionCommand {
+func NewSessionCommand(sm domain.SessionManager) *SessionCommand {
 	return &SessionCommand{sessionMgr: sm}
 }
 

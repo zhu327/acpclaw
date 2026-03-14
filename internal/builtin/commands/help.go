@@ -8,10 +8,13 @@ import (
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
-const helpHeader = `ACP-Claw Bot
+const (
+	helpHeader = `ACP-Claw Bot
 
 Session Management
 `
+	helpFallback = helpHeader + "/new [workspace]  — Start a new session\n/session  — List all sessions\n/resume [N]  — Resume a session\n\nControls\n/cancel  — Cancel current prompt\n/reconnect  — Reconnect ACP process\n\n/status  — Show status\n/help  — Show this help"
+)
 
 // HelpCommand handles /help.
 type HelpCommand struct{}
@@ -27,7 +30,7 @@ func (c *HelpCommand) Description() string { return "Show help" }
 func (c *HelpCommand) Execute(ctx context.Context, args []string, tc *domain.TurnContext) (*domain.Result, error) {
 	cmds, _ := tc.State["commands"].(map[string]domain.Command)
 	if cmds == nil {
-		return &domain.Result{Text: helpHeader + "/new [workspace]  — Start a new session\n/session  — List all sessions\n/resume [N]  — Resume a session\n\nControls\n/cancel  — Cancel current prompt\n/reconnect  — Reconnect ACP process\n\n/status  — Show status\n/help  — Show this help"}, nil
+		return &domain.Result{Text: helpFallback}, nil
 	}
 	var names []string
 	for name := range cmds {

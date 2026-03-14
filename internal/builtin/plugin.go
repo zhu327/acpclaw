@@ -25,17 +25,22 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+const defaultChannelName = "telegram"
+
 // BuiltinPlugin provides the default implementation of all framework hooks.
 type BuiltinPlugin struct {
 	cfg         *config.Config
 	echo        bool
-	fw          *framework.Framework
-	agentSvc    domain.AgentService
+	fw          domain.PluginContext
+	sessionMgr  domain.SessionManager
+	prompter    domain.Prompter
+	permHandler domain.PermissionHandler
+	actObserver domain.ActivityObserver
 	tgChannel   *telegram.TelegramChannel
-	adapter     *commands.AgentAdapter
 	resumeStore commands.ResumeChoicesStore
 	executor    *promptExecutor
 	memorySvc   *memory.Service
+	shutdownFn  func()
 }
 
 // NewPlugin creates a new BuiltinPlugin.
@@ -47,16 +52,11 @@ func NewPlugin(cfg *config.Config, echoMode bool) (*BuiltinPlugin, error) {
 func (b *BuiltinPlugin) Name() string { return "builtin" }
 
 // Init implements domain.PluginInitializer.
-func (b *BuiltinPlugin) Init(fw any) error {
-	f, ok := fw.(*framework.Framework)
-	if !ok {
-		return nil
-	}
-	b.fw = f
+func (b *BuiltinPlugin) Init(fw domain.PluginContext) error {
+	b.fw = fw
 	b.buildAgentService()
-	b.adapter = commands.NewAgentAdapter(b.agentSvc)
 	b.resumeStore = commands.NewResumeChoicesStore()
-	b.executor = newPromptExecutor(b.agentSvc, f, b.buildFirstPromptPrefix)
+	b.executor = newPromptExecutor(b.sessionMgr, b.prompter, b.buildFirstPromptPrefix)
 	b.buildMemoryService()
 	b.wireAgentCallbacks()
 	return nil
@@ -78,14 +78,14 @@ func (b *BuiltinPlugin) buildMemoryService() {
 	slog.Info("memory service enabled", "dir", memoryDir)
 }
 
-func (b *BuiltinPlugin) buildFirstPromptPrefix(chatID string) string {
+func (b *BuiltinPlugin) buildFirstPromptPrefix(chat domain.ChatRef) string {
 	var parts []string
 	if b.cfg.Memory.FirstPromptContext && b.memorySvc != nil {
 		if memCtx, err := b.memorySvc.BuildSessionContext(context.Background()); err == nil && memCtx != "" {
 			parts = append(parts, memCtx)
 		}
 	}
-	parts = append(parts, buildSessionInfoBlock(chatID, "telegram"))
+	parts = append(parts, buildSessionInfoBlock(chat))
 	return strings.Join(parts, "\n\n")
 }
 
@@ -96,6 +96,7 @@ func (b *BuiltinPlugin) LoadContext(ctx context.Context, sessionID string, state
 	}
 	memCtx, err := b.memorySvc.BuildSessionContext(ctx)
 	if err != nil {
+		slog.Warn("failed to build memory context", "error", err)
 		return nil
 	}
 	if memCtx != "" {
@@ -123,8 +124,7 @@ func (b *BuiltinPlugin) SaveState(ctx context.Context, sessionID string, state d
 }
 
 func (b *BuiltinPlugin) wireAgentCallbacks() {
-	b.agentSvc.SetPermissionHandler(func(chatID string, req domain.PermissionRequest) <-chan domain.PermissionResponse {
-		chat := domain.ChatRef{ChannelKind: "telegram", ChatID: chatID}
+	b.permHandler.SetPermissionHandler(func(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse {
 		ch := b.fw.RegisterPendingPermission(req.ID, chat)
 		if resp := b.fw.GetResponder(chat); resp != nil {
 			_ = resp.ShowPermissionUI(domain.ChannelPermissionRequest{
@@ -136,16 +136,15 @@ func (b *BuiltinPlugin) wireAgentCallbacks() {
 		}
 		return ch
 	})
-	b.agentSvc.SetActivityHandler(func(chatID string, block domain.ActivityBlock) {
-		chat := domain.ChatRef{ChannelKind: "telegram", ChatID: chatID}
+	b.actObserver.SetActivityHandler(func(chat domain.ChatRef, block domain.ActivityBlock) {
 		if resp := b.fw.GetResponder(chat); resp != nil {
 			workspace := ""
-			if info := b.agentSvc.ActiveSession(chatID); info != nil {
+			if info := b.sessionMgr.ActiveSession(chat); info != nil {
 				workspace = info.Workspace
 			}
-			b := block
-			b.Workspace = workspace
-			_ = resp.SendActivity(b)
+			ab := block
+			ab.Workspace = workspace
+			_ = resp.SendActivity(ab)
 		}
 	})
 }
@@ -168,7 +167,7 @@ func (b *BuiltinPlugin) Channels() []domain.Channel {
 
 // Commands implements domain.CommandProvider.
 func (b *BuiltinPlugin) Commands() []domain.Command {
-	if b.adapter == nil {
+	if b.sessionMgr == nil {
 		return nil
 	}
 	defaultWs := b.cfg.Agent.Workspace
@@ -178,12 +177,12 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 	return []domain.Command{
 		commands.NewStartCommand(),
 		commands.NewHelpCommand(),
-		commands.NewNewCommand(b.adapter, defaultWs),
-		commands.NewSessionCommand(b.adapter),
-		commands.NewResumeCommand(b.adapter, b.resumeStore),
-		commands.NewCancelCommand(b.adapter),
-		commands.NewReconnectCommand(b.adapter, defaultWs),
-		commands.NewStatusCommand(b.adapter),
+		commands.NewNewCommand(b.sessionMgr, defaultWs),
+		commands.NewSessionCommand(b.sessionMgr),
+		commands.NewResumeCommand(b.sessionMgr, b.resumeStore),
+		commands.NewCancelCommand(b.prompter),
+		commands.NewReconnectCommand(b.sessionMgr, defaultWs),
+		commands.NewStatusCommand(b.sessionMgr),
 	}
 }
 
@@ -196,8 +195,8 @@ func (b *BuiltinPlugin) StartBackgroundTasks(ctx context.Context) {
 
 // Shutdown stops the agent service and closes memory. Call on process exit.
 func (b *BuiltinPlugin) Shutdown() {
-	if b.agentSvc != nil {
-		b.agentSvc.Shutdown()
+	if b.shutdownFn != nil {
+		b.shutdownFn()
 	}
 	if b.memorySvc != nil {
 		if err := b.memorySvc.Close(); err != nil {
@@ -215,8 +214,7 @@ func (b *BuiltinPlugin) ResolveResumeChoice(ctx context.Context, chat domain.Cha
 	if !ok {
 		return nil, nil
 	}
-	chatID := chat.CompositeKey()
-	if err := b.agentSvc.LoadSession(ctx, chatID, s.SessionID, s.Workspace); err != nil {
+	if err := b.sessionMgr.LoadSession(ctx, chat, s.SessionID, s.Workspace); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -224,8 +222,7 @@ func (b *BuiltinPlugin) ResolveResumeChoice(ctx context.Context, chat domain.Cha
 
 // ResolveSession implements domain.SessionResolver.
 func (b *BuiltinPlugin) ResolveSession(ctx context.Context, msg domain.InboundMessage) (string, error) {
-	chatID := msg.ChatRef.CompositeKey()
-	info := b.agentSvc.ActiveSession(chatID)
+	info := b.sessionMgr.ActiveSession(msg.ChatRef)
 	if info != nil {
 		return info.SessionID, nil
 	}
@@ -233,10 +230,10 @@ func (b *BuiltinPlugin) ResolveSession(ctx context.Context, msg domain.InboundMe
 	if workspace == "" {
 		workspace = "."
 	}
-	if err := b.agentSvc.NewSession(ctx, chatID, workspace); err != nil {
+	if err := b.sessionMgr.NewSession(ctx, msg.ChatRef, workspace); err != nil {
 		return "", err
 	}
-	info = b.agentSvc.ActiveSession(chatID)
+	info = b.sessionMgr.ActiveSession(msg.ChatRef)
 	if info != nil {
 		return info.SessionID, nil
 	}
@@ -266,7 +263,7 @@ func (b *BuiltinPlugin) ExecuteAction(ctx context.Context, action domain.Action,
 	if action.Kind != domain.ActionPrompt {
 		return nil, nil
 	}
-	if b.agentSvc == nil {
+	if b.prompter == nil {
 		return &domain.Result{Text: "Agent not configured."}, nil
 	}
 	result := b.executor.executePrompt(ctx, action, tc)
@@ -283,7 +280,7 @@ func (b *BuiltinPlugin) HandleBusySendNow(chat domain.ChatRef, token string) (bo
 
 // OnError implements domain.ErrorObserver.
 func (b *BuiltinPlugin) OnError(ctx context.Context, stage string, err error, msg domain.InboundMessage) {
-	slog.Error("turn error", "stage", stage, "chat", msg.ChatRef.CompositeKey(), "error", err)
+	slog.Error("turn error", "stage", stage, "chat", msg.CompositeKey(), "error", err)
 }
 
 // RenderOutbound implements domain.OutboundRenderer.
@@ -306,33 +303,32 @@ func (b *BuiltinPlugin) DispatchOutbound(ctx context.Context, msg domain.Outboun
 func convertToPromptInput(msg domain.InboundMessage) domain.PromptInput {
 	input := domain.PromptInput{Text: msg.Text}
 	for _, att := range msg.Attachments {
-		switch att.MediaType {
-		case "image":
+		if att.MediaType == "image" {
 			input.Images = append(input.Images, domain.ImageData{
 				MIMEType: "image/jpeg",
 				Data:     att.Data,
 				Name:     att.FileName,
 			})
-		default:
-			fd := domain.FileData{
-				MIMEType: att.MediaType,
-				Data:     att.Data,
-				Name:     att.FileName,
-			}
-			if utf8.Valid(att.Data) {
-				s := string(att.Data)
-				fd.TextContent = &s
-			}
-			if fd.MIMEType == "" {
-				fd.MIMEType = "application/octet-stream"
-			}
-			if fd.Name == "" {
-				fd.Name = "attachment.bin"
-			}
-			input.Files = append(input.Files, fd)
+		} else {
+			input.Files = append(input.Files, convertAttachmentToFileData(att))
 		}
 	}
 	return input
+}
+
+func convertAttachmentToFileData(att domain.Attachment) domain.FileData {
+	fd := domain.FileData{MIMEType: att.MediaType, Data: att.Data, Name: att.FileName}
+	if utf8.Valid(att.Data) {
+		s := string(att.Data)
+		fd.TextContent = &s
+	}
+	if fd.MIMEType == "" {
+		fd.MIMEType = "application/octet-stream"
+	}
+	if fd.Name == "" {
+		fd.Name = "attachment.bin"
+	}
+	return fd
 }
 
 func (b *BuiltinPlugin) buildAgentService() {
@@ -349,7 +345,7 @@ func (b *BuiltinPlugin) buildAgentService() {
 		ConnectTimeout: time.Duration(b.cfg.Agent.ConnectTimeout) * time.Second,
 		PermissionMode: domain.PermissionMode(b.cfg.Permissions.Mode),
 		EventOutput:    b.cfg.Permissions.EventOutput,
-		ChannelName:    "telegram",
+		ChannelName:    defaultChannelName,
 		MCPServers: []acpsdk.McpServer{
 			{
 				Stdio: &acpsdk.McpServerStdio{
@@ -360,12 +356,24 @@ func (b *BuiltinPlugin) buildAgentService() {
 			},
 		},
 	}
+	type agentBundle interface {
+		domain.SessionManager
+		domain.Prompter
+		domain.PermissionHandler
+		domain.ActivityObserver
+	}
+	var svc agentBundle
 	if b.echo {
 		slog.Info("echo mode enabled: using EchoAgentService")
-		b.agentSvc = agent.NewEchoAgentService()
+		svc = agent.NewEchoAgentService()
 	} else {
-		b.agentSvc = agent.NewAgentService(svcCfg)
+		svc = agent.NewAgentService(svcCfg)
 	}
+	b.sessionMgr = svc
+	b.prompter = svc
+	b.permHandler = svc
+	b.actObserver = svc
+	b.shutdownFn = svc.Shutdown
 }
 
 // CreateTelegramBot creates the Telegram bot from config.
@@ -430,19 +438,9 @@ func isShutdownNoise(msg string) bool {
 }
 
 func (b *BuiltinPlugin) buildTelegramChannel(bot *telego.Bot, updates <-chan telego.Update, fw *framework.Framework) *telegram.TelegramChannel {
-	allowlistCfg := telegram.AllowlistConfig{
-		AllowedUserIDs:   b.cfg.Telegram.AllowedUserIDs,
-		AllowedUsernames: b.cfg.Telegram.AllowedUsernames,
-	}
-	tgCfg := telegram.ChannelConfig{
-		AllowedUserIDs:   allowlistCfg.AllowedUserIDs,
-		AllowedUsernames: allowlistCfg.AllowedUsernames,
-	}
-	return telegram.NewTelegramChannel(
-		bot,
-		updates,
-		tgCfg,
-		fw,
-		telegram.NewAllowlistChecker(allowlistCfg),
-	)
+	ids := b.cfg.Telegram.AllowedUserIDs
+	names := b.cfg.Telegram.AllowedUsernames
+	allowlist := telegram.AllowlistConfig{AllowedUserIDs: ids, AllowedUsernames: names}
+	channelCfg := telegram.ChannelConfig{AllowedUserIDs: ids, AllowedUsernames: names}
+	return telegram.NewTelegramChannel(bot, updates, channelCfg, fw, telegram.NewAllowlistChecker(allowlist))
 }

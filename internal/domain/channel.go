@@ -1,5 +1,7 @@
 package domain
 
+import "context"
+
 // InboundMessage is the cross-channel unified inbound message format.
 type InboundMessage struct {
 	ChatRef
@@ -31,8 +33,8 @@ type ChannelPermissionRequest struct {
 	AvailableActions []string
 }
 
-// MessageHandler is the callback registered by Dispatcher on each Channel.
-type MessageHandler func(msg InboundMessage, resp Responder)
+// MessageHandler is the callback a Channel invokes for each inbound message.
+type MessageHandler func(ctx context.Context, msg InboundMessage, resp Responder)
 
 // Replier is the minimal interface for sending replies.
 type Replier interface {
@@ -42,6 +44,7 @@ type Replier interface {
 // Responder extends Replier with UI and notification capabilities.
 type Responder interface {
 	Replier
+	ChannelKind() string
 	ShowPermissionUI(req ChannelPermissionRequest) error
 	ShowTypingIndicator() error
 	SendActivity(block ActivityBlock) error
@@ -53,12 +56,6 @@ type Responder interface {
 // Channel is the minimal adapter interface for an IM platform.
 type Channel interface {
 	Kind() string
-	Start(handler MessageHandler) error
+	Start(ctx context.Context, handler MessageHandler) error
 	Stop() error
-	Send(chatID string, msg OutboundMessage) error
-}
-
-// AllowlistChecker checks whether a user is allowed to interact with the bot.
-type AllowlistChecker interface {
-	IsAllowed(userID int64, username string) bool
 }

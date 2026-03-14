@@ -20,6 +20,18 @@ type greeterPlugin struct {
 
 func (p greeterPlugin) Greet() (string, error) { return p.greeting, nil }
 
+type nilableGreeter struct {
+	testPlugin
+	greeting *string
+}
+
+func (p nilableGreeter) Greet() (string, error) {
+	if p.greeting == nil {
+		return "", nil
+	}
+	return *p.greeting, nil
+}
+
 type counter interface {
 	Count() error
 }
@@ -31,14 +43,19 @@ type counterPlugin struct {
 
 func (p counterPlugin) Count() error { *p.total++; return nil }
 
-func TestCallFirst_ReturnsFirstNonEmpty(t *testing.T) {
+func TestCallFirst_ReturnsFirstNonNil(t *testing.T) {
+	hello := "hello"
 	r := NewHookRegistry()
-	r.Register(greeterPlugin{testPlugin{"a"}, ""})
-	r.Register(greeterPlugin{testPlugin{"b"}, "hello"})
-	r.Register(greeterPlugin{testPlugin{"c"}, ""})
+	r.Register(nilableGreeter{testPlugin{"a"}, nil})
+	r.Register(nilableGreeter{testPlugin{"b"}, &hello})
+	r.Register(nilableGreeter{testPlugin{"c"}, nil})
 
 	result, err := CallFirst[greeter](r, func(h greeter) (any, error) {
-		return h.Greet()
+		s, err := h.Greet()
+		if s == "" {
+			return nil, err
+		}
+		return s, err
 	})
 	if err != nil {
 		t.Fatal(err)

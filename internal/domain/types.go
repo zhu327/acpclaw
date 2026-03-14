@@ -1,7 +1,5 @@
 package domain
 
-import "strings"
-
 // ImageData holds inline image content.
 type ImageData struct {
 	MIMEType string
@@ -33,11 +31,6 @@ type ChatRef struct {
 }
 
 // CompositeKey returns a globally unique key for map lookups and storage paths.
-// During migration, ChatID may hold the composite key (e.g. "telegram:12345");
-// in that case it is returned as-is. Otherwise ChannelKind+":"+ChatID is returned.
 func (r ChatRef) CompositeKey() string {
-	if r.ChatID != "" && strings.Contains(r.ChatID, ":") {
-		return r.ChatID
-	}
 	return r.ChannelKind + ":" + r.ChatID
 }

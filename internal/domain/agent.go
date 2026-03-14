@@ -28,36 +28,6 @@ type AgentReply struct {
 	Activities []ActivityBlock
 }
 
-// AgentService is the interface between the IM channel and the ACP agent.
-type AgentService interface {
-	// NewSession spawns or reuses a process and calls new_session.
-	NewSession(ctx context.Context, chatID string, workspace string) error
-	// LoadSession loads an existing session on the ACP process.
-	LoadSession(ctx context.Context, chatID string, sessionID, workspace string) error
-	// ListSessions returns all known sessions for the chat.
-	ListSessions(ctx context.Context, chatID string) ([]SessionInfo, error)
-	// Prompt sends user input to the agent and returns the reply.
-	Prompt(ctx context.Context, chatID string, input PromptInput) (*AgentReply, error)
-	// Cancel cancels the current in-flight prompt.
-	Cancel(ctx context.Context, chatID string) error
-	// Reconnect kills the ACP process and restarts with a new session.
-	Reconnect(ctx context.Context, chatID string, workspace string) error
-	// ActiveSession returns the current active session info, or nil.
-	ActiveSession(chatID string) *SessionInfo
-	// Shutdown stops all managed processes.
-	Shutdown()
-	// SetActivityHandler registers a callback for agent activity updates.
-	SetActivityHandler(fn func(chatID string, block ActivityBlock))
-	// SetPermissionHandler registers a callback for permission requests.
-	SetPermissionHandler(fn func(chatID string, req PermissionRequest) <-chan PermissionResponse)
-	// SetSessionPermissionMode sets the permission mode for a session.
-	SetSessionPermissionMode(chatID string, mode PermissionMode)
-}
-
-// --- Split interfaces (new architecture) ---
-// These coexist with AgentService during migration.
-// AgentService will be removed in Phase 6.
-
 // SessionManager handles session lifecycle.
 type SessionManager interface {
 	NewSession(ctx context.Context, chat ChatRef, workspace string) error

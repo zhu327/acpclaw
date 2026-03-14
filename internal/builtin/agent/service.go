@@ -28,9 +28,14 @@ type ServiceConfig struct {
 	AgentEnv []string
 }
 
-var _ domain.AgentService = (*AcpAgentService)(nil)
+var (
+	_ domain.SessionManager    = (*AcpAgentService)(nil)
+	_ domain.Prompter          = (*AcpAgentService)(nil)
+	_ domain.PermissionHandler = (*AcpAgentService)(nil)
+	_ domain.ActivityObserver  = (*AcpAgentService)(nil)
+)
 
-// AcpAgentService manages ACP agent subprocesses per chat. Each chatID maintains a long-lived
+// AcpAgentService manages ACP agent subprocesses per chat. Each chat maintains a long-lived
 // ACP process; session operations run on the same connection.
 type AcpAgentService struct {
 	cfg            ServiceConfig
@@ -41,8 +46,8 @@ type AcpAgentService struct {
 	mu             sync.RWMutex
 	promptLocks    sync.Map // map[string]*sync.Mutex
 	sessionLocks   sync.Map // map[string]*sync.Mutex
-	onActivity     func(string, domain.ActivityBlock)
-	onPermission   func(string, domain.PermissionRequest) <-chan domain.PermissionResponse
+	onActivity     func(domain.ChatRef, domain.ActivityBlock)
+	onPermission   func(domain.ChatRef, domain.PermissionRequest) <-chan domain.PermissionResponse
 }
 
 // NewAgentService creates a new ACP agent service. The returned service owns a
@@ -65,7 +70,7 @@ func NewAgentService(cfg ServiceConfig) *AcpAgentService {
 }
 
 // SetActivityHandler sets the callback for activity updates.
-func (s *AcpAgentService) SetActivityHandler(fn func(chatID string, block domain.ActivityBlock)) {
+func (s *AcpAgentService) SetActivityHandler(fn func(chat domain.ChatRef, block domain.ActivityBlock)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onActivity = fn
@@ -73,7 +78,7 @@ func (s *AcpAgentService) SetActivityHandler(fn func(chatID string, block domain
 
 // SetPermissionHandler sets the callback for permission requests.
 func (s *AcpAgentService) SetPermissionHandler(
-	fn func(chatID string, req domain.PermissionRequest) <-chan domain.PermissionResponse,
+	fn func(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse,
 ) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,10 +86,11 @@ func (s *AcpAgentService) SetPermissionHandler(
 }
 
 // ActiveSession returns the active session info for the chat, or nil.
-func (s *AcpAgentService) ActiveSession(chatID string) *domain.SessionInfo {
+func (s *AcpAgentService) ActiveSession(chat domain.ChatRef) *domain.SessionInfo {
+	key := chat.CompositeKey()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	live := s.liveByChat[chatID]
+	live := s.liveByChat[key]
 	if live == nil {
 		return nil
 	}
@@ -100,26 +106,27 @@ func (s *AcpAgentService) ActiveSession(chatID string) *domain.SessionInfo {
 // This means Reconnect can concurrently interrupt an in-flight Prompt: killing the agent
 // subprocess causes live.conn.Prompt to return an I/O error, which Prompt returns to
 // the caller. This is the intended cancellation path — do not merge the two locks.
-func (s *AcpAgentService) promptLockFor(chatID string) *sync.Mutex {
-	v, _ := s.promptLocks.LoadOrStore(chatID, &sync.Mutex{})
+func (s *AcpAgentService) promptLockFor(key string) *sync.Mutex {
+	v, _ := s.promptLocks.LoadOrStore(key, &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 
-func (s *AcpAgentService) sessionLockFor(chatID string) *sync.Mutex {
-	v, _ := s.sessionLocks.LoadOrStore(chatID, &sync.Mutex{})
+func (s *AcpAgentService) sessionLockFor(key string) *sync.Mutex {
+	v, _ := s.sessionLocks.LoadOrStore(key, &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 
 // NewSession creates a new session; respawns the process when workspace changes.
-func (s *AcpAgentService) NewSession(ctx context.Context, chatID string, workspace string) error {
+func (s *AcpAgentService) NewSession(ctx context.Context, chat domain.ChatRef, workspace string) error {
 	if len(s.cfg.AgentCommand) == 0 {
 		return domain.ErrAgentCommandNotConfigured
 	}
-	sessionLock := s.sessionLockFor(chatID)
+	key := chat.CompositeKey()
+	sessionLock := s.sessionLockFor(key)
 	sessionLock.Lock()
 	defer sessionLock.Unlock()
 
-	live, err := s.ensureProcess(ctx, chatID, workspace)
+	live, err := s.ensureProcess(ctx, key, workspace)
 	if err != nil {
 		return err
 	}
@@ -130,33 +137,34 @@ func (s *AcpAgentService) NewSession(ctx context.Context, chatID string, workspa
 
 	if targetWorkspace != live.workspace {
 		slog.Info("workspace changed, respawning ACP process",
-			"chat_id", chatID,
+			"chat", key,
 			"old_workspace", live.workspace,
 			"new_workspace", targetWorkspace,
 		)
-		stopLiveSession(s.detachLiveSession(chatID))
+		stopLiveSession(s.detachLiveSession(key))
 		s.mu.Lock()
-		delete(s.sessionHistory, chatID)
+		delete(s.sessionHistory, key)
 		s.mu.Unlock()
-		live, err = s.ensureProcess(ctx, chatID, targetWorkspace)
+		live, err = s.ensureProcess(ctx, key, targetWorkspace)
 		if err != nil {
 			return err
 		}
 	}
 
-	return s.createNewSession(ctx, chatID, live, targetWorkspace)
+	return s.createNewSession(ctx, key, live, targetWorkspace)
 }
 
 // LoadSession loads an existing session on the ACP process.
-func (s *AcpAgentService) LoadSession(ctx context.Context, chatID string, sessionID, workspace string) error {
+func (s *AcpAgentService) LoadSession(ctx context.Context, chat domain.ChatRef, sessionID, workspace string) error {
 	if len(s.cfg.AgentCommand) == 0 {
 		return domain.ErrAgentCommandNotConfigured
 	}
-	sessionLock := s.sessionLockFor(chatID)
+	key := chat.CompositeKey()
+	sessionLock := s.sessionLockFor(key)
 	sessionLock.Lock()
 	defer sessionLock.Unlock()
 
-	live, err := s.ensureProcess(ctx, chatID, workspace)
+	live, err := s.ensureProcess(ctx, key, workspace)
 	if err != nil {
 		return err
 	}
@@ -180,7 +188,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID string, sessio
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), sessionNotFoundPhrase) {
-			s.removeSessionFromHistory(chatID, sessionID)
+			s.removeSessionFromHistory(key, sessionID)
 			return fmt.Errorf("%w: %s", domain.ErrSessionNotFound, sessionID)
 		}
 		return err
@@ -189,7 +197,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID string, sessio
 	s.mu.Lock()
 	live.sessionID = sessionID
 	live.workspace = targetWorkspace
-	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], domain.SessionInfo{
+	s.sessionHistory[key] = upsertCappedSessionHistory(s.sessionHistory[key], domain.SessionInfo{
 		SessionID: sessionID,
 		Workspace: targetWorkspace,
 		UpdatedAt: time.Now(),
@@ -200,9 +208,10 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chatID string, sessio
 }
 
 // ListSessions returns sessions from the agent or local history fallback.
-func (s *AcpAgentService) ListSessions(ctx context.Context, chatID string) ([]domain.SessionInfo, error) {
+func (s *AcpAgentService) ListSessions(ctx context.Context, chat domain.ChatRef) ([]domain.SessionInfo, error) {
+	key := chat.CompositeKey()
 	s.mu.RLock()
-	live := s.liveByChat[chatID]
+	live := s.liveByChat[key]
 	s.mu.RUnlock()
 
 	if live == nil {
@@ -222,7 +231,7 @@ func (s *AcpAgentService) ListSessions(ctx context.Context, chatID string) ([]do
 	}
 
 	s.mu.RLock()
-	history := s.sessionHistory[chatID]
+	history := s.sessionHistory[key]
 	s.mu.RUnlock()
 	if len(history) == 0 {
 		return nil, nil
@@ -233,28 +242,29 @@ func (s *AcpAgentService) ListSessions(ctx context.Context, chatID string) ([]do
 }
 
 // Reconnect kills the ACP process and respawns with a new session.
-func (s *AcpAgentService) Reconnect(ctx context.Context, chatID string, workspace string) error {
+func (s *AcpAgentService) Reconnect(ctx context.Context, chat domain.ChatRef, workspace string) error {
 	if len(s.cfg.AgentCommand) == 0 {
 		return domain.ErrAgentCommandNotConfigured
 	}
-	sessionLock := s.sessionLockFor(chatID)
+	key := chat.CompositeKey()
+	sessionLock := s.sessionLockFor(key)
 	sessionLock.Lock()
 	defer sessionLock.Unlock()
 
-	stopLiveSession(s.detachLiveSession(chatID))
+	stopLiveSession(s.detachLiveSession(key))
 
-	live, err := s.ensureProcess(ctx, chatID, workspace)
+	live, err := s.ensureProcess(ctx, key, workspace)
 	if err != nil {
 		return err
 	}
-	if err := s.createNewSession(ctx, chatID, live, live.workspace); err != nil {
-		stopLiveSession(s.detachLiveSession(chatID))
+	if err := s.createNewSession(ctx, key, live, live.workspace); err != nil {
+		stopLiveSession(s.detachLiveSession(key))
 		return err
 	}
 
 	s.mu.Lock()
-	if len(s.sessionHistory[chatID]) > 1 {
-		s.sessionHistory[chatID] = s.sessionHistory[chatID][len(s.sessionHistory[chatID])-1:]
+	if len(s.sessionHistory[key]) > 1 {
+		s.sessionHistory[key] = s.sessionHistory[key][len(s.sessionHistory[key])-1:]
 	}
 	s.mu.Unlock()
 	return nil
@@ -272,15 +282,16 @@ const sessionNotFoundPhrase = "not found"
 // Prompt sends a prompt to the agent and returns the reply.
 func (s *AcpAgentService) Prompt(
 	ctx context.Context,
-	chatID string,
+	chat domain.ChatRef,
 	input domain.PromptInput,
 ) (*domain.AgentReply, error) {
-	lock := s.promptLockFor(chatID)
+	key := chat.CompositeKey()
+	lock := s.promptLockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
 
 	s.mu.RLock()
-	live := s.liveByChat[chatID]
+	live := s.liveByChat[key]
 	onActivity := s.onActivity
 	onPermission := s.onPermission
 	s.mu.RUnlock()
@@ -290,12 +301,12 @@ func (s *AcpAgentService) Prompt(
 	}
 
 	slog.Info("Prompt to ACP",
-		"chat_id", chatID,
+		"chat", key,
 		"session_id", live.sessionID,
 		"text", logTextPreview(input.Text, 200),
 	)
 
-	s.setupPromptCallbacks(live, chatID, onActivity, onPermission)
+	s.setupPromptCallbacks(live, chat, onActivity, onPermission)
 
 	live.client.StartCapture()
 	blocks := BuildContentBlocks(input)
@@ -317,44 +328,45 @@ func (s *AcpAgentService) Prompt(
 // setupPromptCallbacks wires activity and permission callbacks for prompt execution.
 func (s *AcpAgentService) setupPromptCallbacks(
 	live *liveSession,
-	chatID string,
-	onActivity func(string, domain.ActivityBlock),
-	onPermission func(string, domain.PermissionRequest) <-chan domain.PermissionResponse,
+	chat domain.ChatRef,
+	onActivity func(domain.ChatRef, domain.ActivityBlock),
+	onPermission func(domain.ChatRef, domain.PermissionRequest) <-chan domain.PermissionResponse,
 ) {
 	logEvents := shouldLogEventOutput(s.cfg.EventOutput)
 	permMode := live.permMode
+	key := chat.CompositeKey()
 
 	live.client.SetCallbacks(
 		func(b domain.ActivityBlock) {
 			if logEvents {
 				slog.Info("ACP activity event",
-					"chat_id", chatID, "session_id", live.sessionID,
+					"chat", key, "session_id", live.sessionID,
 					"kind", b.Kind, "status", b.Status,
 					"detail", logTextPreview(b.Detail, 200),
 					"text", logTextPreview(b.Text, 200),
 				)
 			}
 			if onActivity != nil {
-				onActivity(chatID, b)
+				onActivity(chat, b)
 			}
 		},
 		func(req domain.PermissionRequest) <-chan domain.PermissionResponse {
 			if logEvents {
 				slog.Info("ACP permission event",
-					"chat_id", chatID, "session_id", live.sessionID,
+					"chat", key, "session_id", live.sessionID,
 					"request_id", req.ID, "tool", logTextPreview(req.Tool, 200),
 				)
 			}
-			return s.permissionResponseChan(permMode, chatID, req, onPermission)
+			return s.permissionResponseChan(permMode, chat, req, onPermission)
 		},
 	)
 }
 
 func (s *AcpAgentService) permissionResponseChan(
 	permMode domain.PermissionMode,
-	chatID string,
+	chat domain.ChatRef,
 	req domain.PermissionRequest,
-	onPermission func(string, domain.PermissionRequest) <-chan domain.PermissionResponse,
+	onPermission func(domain.ChatRef, domain.PermissionRequest) <-chan domain.PermissionResponse,
 ) <-chan domain.PermissionResponse {
 	ch := make(chan domain.PermissionResponse, 1)
 	switch permMode {
@@ -366,16 +378,17 @@ func (s *AcpAgentService) permissionResponseChan(
 		return ch
 	}
 	if onPermission != nil {
-		return onPermission(chatID, req)
+		return onPermission(chat, req)
 	}
 	ch <- domain.PermissionResponse{Decision: domain.PermissionDeny}
 	return ch
 }
 
 // Cancel cancels the active prompt for the chat.
-func (s *AcpAgentService) Cancel(ctx context.Context, chatID string) error {
+func (s *AcpAgentService) Cancel(ctx context.Context, chat domain.ChatRef) error {
+	key := chat.CompositeKey()
 	s.mu.RLock()
-	live := s.liveByChat[chatID]
+	live := s.liveByChat[key]
 	s.mu.RUnlock()
 
 	if live == nil {
@@ -402,10 +415,11 @@ func (s *AcpAgentService) Shutdown() {
 }
 
 // SetSessionPermissionMode updates the permission mode for the chat's live session.
-func (s *AcpAgentService) SetSessionPermissionMode(chatID string, mode domain.PermissionMode) {
+func (s *AcpAgentService) SetSessionPermissionMode(chat domain.ChatRef, mode domain.PermissionMode) {
+	key := chat.CompositeKey()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if live := s.liveByChat[chatID]; live != nil {
+	if live := s.liveByChat[key]; live != nil {
 		live.permMode = mode
 	}
 }

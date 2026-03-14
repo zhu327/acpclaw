@@ -121,8 +121,15 @@ type ErrorObserver interface {
 
 // --- Plugin Lifecycle ---
 
+// PluginContext is the interface the framework exposes to plugins during Init.
+// Defined here (not in the framework package) to avoid circular imports.
+type PluginContext interface {
+	GetResponder(chat ChatRef) Responder
+	RegisterPendingPermission(reqID string, chat ChatRef) chan PermissionResponse
+}
+
 // PluginInitializer is implemented by plugins that need a reference to the
-// framework. Accepts any to avoid circular import; plugins type-assert internally.
+// framework at startup.
 type PluginInitializer interface {
-	Init(fw any) error
+	Init(fw PluginContext) error
 }

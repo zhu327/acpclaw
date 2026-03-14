@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/builtin/memory"
+	"github.com/zhu327/acpclaw/internal/domain"
 )
 
 func newTestStore(t *testing.T, dir string) *memory.Store {

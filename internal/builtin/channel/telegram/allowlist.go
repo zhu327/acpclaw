@@ -1,10 +1,11 @@
 package telegram
 
-import (
-	"strings"
+import "strings"
 
-	"github.com/zhu327/acpclaw/internal/domain"
-)
+// AllowlistChecker checks whether a user is allowed to interact with the bot.
+type AllowlistChecker interface {
+	IsAllowed(userID int64, username string) bool
+}
 
 // AllowlistConfig holds user ID and username allowlists for access control.
 type AllowlistConfig struct {
@@ -16,8 +17,6 @@ type AllowlistConfig struct {
 type DefaultAllowlistChecker struct {
 	cfg AllowlistConfig
 }
-
-var _ domain.AllowlistChecker = (*DefaultAllowlistChecker)(nil)
 
 // NewAllowlistChecker creates an allowlist checker.
 func NewAllowlistChecker(cfg AllowlistConfig) *DefaultAllowlistChecker {

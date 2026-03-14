@@ -10,17 +10,17 @@ import (
 
 const summarizeDateFormat = "2006-01-02"
 
-// AgentSummarizer uses AgentService to generate session summaries and implements domain.Summarizer.
+// AgentSummarizer uses Prompter to generate session summaries and implements domain.Summarizer.
 type AgentSummarizer struct {
-	agentSvc domain.AgentService
-	chatID   string
+	prompter domain.Prompter
+	chat     domain.ChatRef
 }
 
 // NewAgentSummarizer creates an agent-based summarizer.
-func NewAgentSummarizer(agentSvc domain.AgentService, chatID string) *AgentSummarizer {
+func NewAgentSummarizer(prompter domain.Prompter, chat domain.ChatRef) *AgentSummarizer {
 	return &AgentSummarizer{
-		agentSvc: agentSvc,
-		chatID:   chatID,
+		prompter: prompter,
+		chat:     chat,
 	}
 }
 
@@ -29,7 +29,7 @@ var _ domain.Summarizer = (*AgentSummarizer)(nil)
 // Summarize generates a session summary and implements domain.Summarizer.
 func (s *AgentSummarizer) Summarize(ctx context.Context, transcript string) (string, error) {
 	prompt := buildSummarizePrompt(transcript)
-	reply, err := s.agentSvc.Prompt(ctx, s.chatID, domain.PromptInput{Text: prompt})
+	reply, err := s.prompter.Prompt(ctx, s.chat, domain.PromptInput{Text: prompt})
 	if err != nil {
 		return "", fmt.Errorf("summarize prompt: %w", err)
 	}
