@@ -147,6 +147,22 @@ type CommandProvider interface {
 }
 ```
 
+### Callback Hooks
+
+```go
+// BusyHandler handles the "send now" callback when a chat is busy.
+// CallFirst semantics.
+type BusyHandler interface {
+    HandleBusySendNow(chatID string, token string) (ok bool, err error)
+}
+
+// ResumeHandler handles session resume choice callbacks.
+// CallFirst semantics.
+type ResumeHandler interface {
+    ResolveResumeChoice(ctx context.Context, chatID string, sessionIndex int) (*SessionInfo, error)
+}
+```
+
 ### Observer Hooks
 
 ```go
@@ -217,10 +233,17 @@ Internally iterates `plugins`, performs type assertion (`if h, ok := p.(T); ok`)
 ## Framework
 
 ```go
+type permEntry struct {
+    ch     chan domain.PermissionResponse
+    chatID string
+}
+
 type Framework struct {
-    registry *HookRegistry
-    channels map[string]domain.Channel
-    commands map[string]domain.Command
+    registry     *HookRegistry
+    channels     map[string]domain.Channel
+    commands     map[string]domain.Command
+    responders   sync.Map // chatID → domain.Responder (active turn responders)
+    pendingPerms sync.Map // reqID → permEntry (pending permission requests)
 }
 
 func New() *Framework
@@ -228,27 +251,53 @@ func (f *Framework) Register(p Plugin)
 func (f *Framework) Init() error    // collects channels and commands from providers
 func (f *Framework) Start(ctx context.Context) error  // starts channels, blocks
 
-// Callback entry points for channels
+// GetResponder returns the active Responder for a chatID, or nil if no turn is active.
+// Used by permission and activity handlers to send UI updates during a turn.
+func (f *Framework) GetResponder(chatID string) domain.Responder
+
+// Callback entry points for channels.
+// Channels are responsible for converting channel-specific types (e.g. callback
+// data strings "always"/"once"/"deny") to domain types before calling these methods.
 func (f *Framework) RespondPermission(reqID string, decision domain.PermissionDecision)
-func (f *Framework) HandleBusySendNow(chatID string)
-func (f *Framework) ResolveResumeChoice(chatID string, sessionIndex int)
+func (f *Framework) HandleBusySendNow(chatID string, token string) (ok bool, err error)
+func (f *Framework) ResolveResumeChoice(ctx context.Context, chatID string, sessionIndex int) (*domain.SessionInfo, error)
 ```
 
 ### ProcessInbound Pipeline
 
 ```go
 func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessage, resp domain.Responder) error {
+    // Register responder for permission/activity handlers to find
+    f.responders.Store(msg.ChatID, resp)
+    defer f.responders.Delete(msg.ChatID)
+
     // 1. ResolveSession — CallFirst[SessionResolver]
+    //    If all resolvers return empty, the builtin resolver auto-creates a new
+    //    session via SessionManager.NewSession and returns the new session ID.
+
     // 2. LoadContext — CallAll[ContextLoader] with shared state
+    //    State is created fresh (empty map) for each turn.
+    //    Framework pre-populates state["commands"] with the registered command
+    //    list before calling ContextLoader hooks.
+    //    Each ContextLoader then mutates the shared state to inject its context
+    //    (e.g. memory context, session info).
+
     // 3. RouteMessage — CallFirst[MessageRouter]
+
     // 4. ExecuteAction:
     //    - ActionCommand: lookup in f.commands, call cmd.Execute()
     //    - ActionPrompt: CallFirst[ActionExecutor]
-    // 5. SaveState — defer CallAll[StateSaver]
+
+    // 5. SaveState — defer CallAll[StateSaver] (always runs, even on error)
+
     // 6. RenderOutbound — CallAll[OutboundRenderer] (skip if SuppressOutbound)
+
     // 7. DispatchOutbound — CallAll[OutboundDispatcher] for each outbound
-    //
-    // Error handling: catch top-level exceptions, notify CallAll[ErrorObserver], re-raise
+
+    // Error handling: on error at any stage, notify CallAll[ErrorObserver]
+    // (fault-isolated: one observer failure doesn't block others), then return
+    // the original error. ErrorObserver implementations can send error messages
+    // to the user via the responder.
 }
 ```
 
@@ -315,11 +364,45 @@ Framework and all hooks treat `ChatID` as an opaque string.
 
 ### Callback Decoupling
 
-Channels route callbacks through Framework methods instead of directly calling Dispatcher:
+Channels route callbacks through Framework methods instead of directly calling Dispatcher. The channel is responsible for converting channel-specific callback data to domain types before calling Framework methods.
 
-- Permission: Channel → `Framework.RespondPermission(reqID, decision)`
-- Busy: Channel → `Framework.HandleBusySendNow(chatID)`
-- Resume: Channel → `Framework.ResolveResumeChoice(chatID, sessionIndex)`
+- Permission: Channel receives callback string (`"always"`, `"once"`, `"deny"`) → maps to `domain.PermissionDecision` → calls `Framework.RespondPermission(reqID, decision)`
+- Busy: Channel → `Framework.HandleBusySendNow(chatID, token)` → returns `(ok, error)` so channel can update its UI
+- Resume: Channel → `Framework.ResolveResumeChoice(ctx, chatID, sessionIndex)` → returns `(*SessionInfo, error)` so channel can display the resumed session name
+
+### Permission Flow
+
+Permission requests flow through a pending request registry in the Framework:
+
+1. During `ActionExecutor`, the agent's `PermissionHandler` is called with a permission request
+2. The handler stores a `permEntry{ch, chatID}` in `Framework.pendingPerms` keyed by `reqID`, and sends permission UI to the user via `Framework.GetResponder(chatID).ShowPermissionUI()`
+3. When the user responds, the channel maps the callback string to `domain.PermissionDecision` and calls `Framework.RespondPermission(reqID, decision)`
+4. Framework looks up the `permEntry` by `reqID`, sends the decision on the channel, and removes the entry. If the decision is `PermissionAlways`, Framework also calls `PermissionHandler.SetSessionPermissionMode(chatID, PermissionModeApprove)` using the `chatID` from the stored entry.
+5. Pending entries expire after 5 minutes (consistent with current behavior). A background goroutine or lazy cleanup on access removes stale entries.
+
+### Plugin Initialization
+
+Plugins that need a reference to the Framework receive it via an `Init` method. After `Register`, the Framework calls `Init(fw)` on any plugin that implements `PluginInitializer`:
+
+```go
+type PluginInitializer interface {
+    Init(fw *Framework) error
+}
+```
+
+BuiltinPlugin implements `PluginInitializer` to store the Framework reference, which it uses to access `GetResponder`, `pendingPerms`, and other Framework facilities when wiring permission and activity handlers.
+
+### Activity and Responder Wiring
+
+The Framework maintains a `responders` map (`sync.Map` of `chatID → Responder`). At the start of `ProcessInbound`, the current responder is stored; at the end it is removed.
+
+Permission and activity handlers registered on the agent service use `Framework.GetResponder(chatID)` to find the active responder for sending permission UI and activity updates. If no turn is active (responder is nil), updates are dropped.
+
+### Allowlist
+
+Access control is handled at the channel layer. Each channel receives its allowlist configuration and checks incoming messages before invoking the Framework's `MessageHandler`. Messages from disallowed users are silently dropped, never reaching `ProcessInbound`. This keeps authorization logic channel-specific (Telegram uses user IDs and usernames; other channels may use different identity schemes).
+
+The current `AllowlistChecker` and `DefaultAllowlistChecker` from `internal/dispatcher/` move to `builtin/channel/telegram/` during Phase 2, since they use Telegram-specific identity types (int64 user IDs, usernames).
 
 ## Command System
 
@@ -341,7 +424,7 @@ Built-in commands registered via `CommandProvider`:
 | `/status` | `SessionManager` |
 | `/session` | `SessionManager` |
 | `/resume` | `SessionManager` |
-| `/help` | None (reads registered commands from state) |
+| `/help` | None (reads registered command list from `TurnContext.State["commands"]`, injected by Framework during `LoadContext`) |
 | `/start` | None |
 
 Each command is a standalone struct depending only on the minimal interface it needs. Commands are in `builtin/commands/`, one file per command.
@@ -355,13 +438,25 @@ Memory and Cron are managed via MCP tools, not user-facing commands.
 | `SessionResolver` | Parse composite key, find active session | `dispatcher.go` session lookup |
 | `ContextLoader` | Inject memory context into state (first prompt context) | `dispatcher.go` firstPromptContext logic |
 | `MessageRouter` | Parse `/command` prefix, split command vs prompt | `dispatcher/commands.go` command parsing |
-| `ActionExecutor` | Call `Prompter.Prompt()`, manage busy state | `dispatcher.go` handlePrompt |
+| `ActionExecutor` | Call `Prompter.Prompt()`, manage busy queue (see below) | `dispatcher.go` handlePrompt |
 | `StateSaver` | History persistence, auto summarize | `dispatcher.go` summarize logic |
 | `OutboundRenderer` | Convert `AgentReply` to `OutboundMessage` | `dispatcher.go` reply formatting |
 | `OutboundDispatcher` | Send via `Responder.Reply()` | `dispatcher.go` send logic |
 | `ChannelProvider` | Return `[TelegramChannel]` | `app.go` channel construction |
 | `CommandProvider` | Return built-in command list | `dispatcher/commands.go` |
 | `ErrorObserver` | Log error + notify user via responder | Scattered error handling |
+
+### ActionExecutor Busy Queue
+
+The BuiltinPlugin's `ActionExecutor` implementation migrates the current dispatcher's busy/queue behavior:
+
+- Per-chat `sync.Mutex` (`TryLock`) to serialize prompt execution
+- `pendingByChat` map: when a prompt arrives while another is in-flight, the new message is queued
+- `ShowBusyNotification`: sent to the user with a "Send now" button when busy
+- `HandleBusySendNow` flow: cancels the in-flight prompt, dequeues the pending message, and processes it
+- `popPending`: retrieves and removes the queued message when the current prompt finishes
+
+This state lives in the BuiltinPlugin (not in Framework), since it is implementation-specific behavior. The Framework's `HandleBusySendNow(chatID, token)` delegates to a `BusyHandler` interface that BuiltinPlugin implements.
 
 ### Agent Interface Split
 
@@ -425,7 +520,7 @@ Six phases; the project compiles and runs after each phase.
 ### Phase 5: Memory / Cron
 
 - Memory: BuiltinPlugin implements `ContextLoader` (inject memory context) and `StateSaver` (history + auto summarize)
-- Cron: migrate to `builtin/cron/`, triggers go through `Framework.ProcessInbound()`
+- Cron: migrate to `builtin/cron/`, triggers go through `Framework.ProcessInbound()`. Cron constructs a `BackgroundResponder` (from the channel layer) for the target channel and passes it to `ProcessInbound` alongside the synthesized `InboundMessage`. The cron job's `Channel` field determines which channel's `BackgroundResponder` to use.
 - Move `internal/memory/` → `builtin/memory/`, `internal/cron/` → `builtin/cron/`
 
 ### Phase 6: Cleanup
