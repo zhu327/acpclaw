@@ -21,11 +21,6 @@ type CronStore interface {
 	ListAllJobs() ([]domain.CronJob, error)
 }
 
-// NewServer creates a minimal MCP server with no tools.
-func NewServer() *server.MCPServer {
-	return NewServerWithMemoryAndCron(nil, nil)
-}
-
 // NewServerWithMemoryAndCron creates an MCP server with memory and cron tools.
 func NewServerWithMemoryAndCron(memoryStore MemoryStore, cronStore CronStore) *server.MCPServer {
 	s := server.NewMCPServer("acpclaw", "1.0.0")

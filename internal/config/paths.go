@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -36,31 +35,4 @@ func GetAcpclawHistoryDir() string {
 // Note: callers must ensure the directory exists (use os.MkdirAll).
 func GetAcpclawCronDir() string {
 	return filepath.Join(GetAcpclawBaseDir(), "cron")
-}
-
-// EnsureAcpclawMemoryDir ensures the memory directory exists and returns the path.
-func EnsureAcpclawMemoryDir() (string, error) {
-	dir := GetAcpclawMemoryDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create memory dir: %w", err)
-	}
-	return dir, nil
-}
-
-// EnsureAcpclawHistoryDir ensures the history directory exists and returns the path.
-func EnsureAcpclawHistoryDir() (string, error) {
-	dir := GetAcpclawHistoryDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create history dir: %w", err)
-	}
-	return dir, nil
-}
-
-// EnsureAcpclawCronDir ensures the cron directory exists and returns the path.
-func EnsureAcpclawCronDir() (string, error) {
-	dir := GetAcpclawCronDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create cron dir: %w", err)
-	}
-	return dir, nil
 }

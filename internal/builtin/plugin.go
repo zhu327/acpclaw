@@ -2,6 +2,8 @@ package builtin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -24,8 +26,6 @@ import (
 	"github.com/zhu327/acpclaw/internal/templates"
 	"golang.org/x/net/proxy"
 )
-
-const defaultChannelName = "telegram"
 
 // BuiltinPlugin provides the default implementation of all framework hooks.
 type BuiltinPlugin struct {
@@ -73,7 +73,9 @@ func (b *BuiltinPlugin) buildMemoryService() {
 		slog.Warn("memory service init failed", "error", err)
 		return
 	}
-	_ = svc.Reindex()
+	if err := svc.Reindex(); err != nil {
+		slog.Warn("memory reindex failed", "error", err)
+	}
 	b.memorySvc = svc
 	slog.Info("memory service enabled", "dir", memoryDir)
 }
@@ -89,22 +91,6 @@ func (b *BuiltinPlugin) buildFirstPromptPrefix(chat domain.ChatRef) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// LoadContext implements domain.ContextLoader.
-func (b *BuiltinPlugin) LoadContext(ctx context.Context, sessionID string, state domain.State) error {
-	if b.memorySvc == nil || !b.cfg.Memory.FirstPromptContext {
-		return nil
-	}
-	memCtx, err := b.memorySvc.BuildSessionContext(ctx)
-	if err != nil {
-		slog.Warn("failed to build memory context", "error", err)
-		return nil
-	}
-	if memCtx != "" {
-		state["memory_context"] = memCtx
-	}
-	return nil
-}
-
 // SaveState implements domain.StateSaver.
 func (b *BuiltinPlugin) SaveState(ctx context.Context, sessionID string, state domain.State) error {
 	if b.memorySvc == nil {
@@ -114,39 +100,57 @@ func (b *BuiltinPlugin) SaveState(ctx context.Context, sessionID string, state d
 	if chatID == "" {
 		return nil
 	}
-	if userText, ok := state["user_text"].(string); ok && userText != "" {
-		_ = b.memorySvc.AppendHistory(chatID, "user", userText)
-	}
-	if reply, ok := state["reply"].(*domain.AgentReply); ok && reply != nil && reply.Text != "" {
-		_ = b.memorySvc.AppendHistory(chatID, "assistant", reply.Text)
-	}
+	b.appendStateToHistory(chatID, state)
 	return nil
 }
 
+func (b *BuiltinPlugin) appendStateToHistory(chatID string, state domain.State) {
+	if userText, ok := state["user_text"].(string); ok && userText != "" {
+		if err := b.memorySvc.AppendHistory(chatID, "user", userText); err != nil {
+			slog.Warn("failed to append user history", "chat", chatID, "error", err)
+		}
+	}
+	if reply, ok := state["reply"].(*domain.AgentReply); ok && reply != nil && reply.Text != "" {
+		if err := b.memorySvc.AppendHistory(chatID, "assistant", reply.Text); err != nil {
+			slog.Warn("failed to append assistant history", "chat", chatID, "error", err)
+		}
+	}
+}
+
 func (b *BuiltinPlugin) wireAgentCallbacks() {
-	b.permHandler.SetPermissionHandler(func(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse {
-		ch := b.fw.RegisterPendingPermission(req.ID, chat)
-		if resp := b.fw.GetResponder(chat); resp != nil {
-			_ = resp.ShowPermissionUI(domain.ChannelPermissionRequest{
-				ID:               req.ID,
-				Tool:             req.Tool,
-				Description:      req.Description,
-				AvailableActions: permDecisionsToStrings(req.AvailableActions),
-			})
+	b.permHandler.SetPermissionHandler(b.handlePermissionRequest)
+	b.actObserver.SetActivityHandler(b.handleActivityBlock)
+}
+
+func (b *BuiltinPlugin) handlePermissionRequest(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse {
+	ch := b.fw.RegisterPendingPermission(req.ID, chat)
+	if resp := b.fw.GetResponder(chat); resp != nil {
+		uiReq := domain.ChannelPermissionRequest{
+			ID:               req.ID,
+			Tool:             req.Tool,
+			Description:      req.Description,
+			AvailableActions: permDecisionsToStrings(req.AvailableActions),
 		}
-		return ch
-	})
-	b.actObserver.SetActivityHandler(func(chat domain.ChatRef, block domain.ActivityBlock) {
-		if resp := b.fw.GetResponder(chat); resp != nil {
-			workspace := ""
-			if info := b.sessionMgr.ActiveSession(chat); info != nil {
-				workspace = info.Workspace
-			}
-			ab := block
-			ab.Workspace = workspace
-			_ = resp.SendActivity(ab)
+		if err := resp.ShowPermissionUI(uiReq); err != nil {
+			slog.Warn("failed to show permission UI", "chat", chat.CompositeKey(), "error", err)
 		}
-	})
+	}
+	return ch
+}
+
+func (b *BuiltinPlugin) handleActivityBlock(chat domain.ChatRef, block domain.ActivityBlock) {
+	resp := b.fw.GetResponder(chat)
+	if resp == nil {
+		return
+	}
+	workspace := ""
+	if info := b.sessionMgr.ActiveSession(chat); info != nil {
+		workspace = info.Workspace
+	}
+	block.Workspace = workspace
+	if err := resp.SendActivity(block); err != nil {
+		slog.Debug("failed to send activity", "chat", chat.CompositeKey(), "error", err)
+	}
 }
 
 func permDecisionsToStrings(d []domain.PermissionDecision) []string {
@@ -165,23 +169,28 @@ func (b *BuiltinPlugin) Channels() []domain.Channel {
 	return nil
 }
 
+func (b *BuiltinPlugin) defaultWorkspace() string {
+	if b.cfg.Agent.Workspace != "" {
+		return b.cfg.Agent.Workspace
+	}
+	return "."
+}
+
 // Commands implements domain.CommandProvider.
 func (b *BuiltinPlugin) Commands() []domain.Command {
 	if b.sessionMgr == nil {
 		return nil
 	}
-	defaultWs := b.cfg.Agent.Workspace
-	if defaultWs == "" {
-		defaultWs = "."
-	}
+	beforeSwitch := b.buildBeforeSessionSwitch()
+	defaultWs := b.defaultWorkspace()
 	return []domain.Command{
 		commands.NewStartCommand(),
 		commands.NewHelpCommand(),
-		commands.NewNewCommand(b.sessionMgr, defaultWs),
+		commands.NewNewCommand(b.sessionMgr, defaultWs, beforeSwitch),
 		commands.NewSessionCommand(b.sessionMgr),
 		commands.NewResumeCommand(b.sessionMgr, b.resumeStore),
 		commands.NewCancelCommand(b.prompter),
-		commands.NewReconnectCommand(b.sessionMgr, defaultWs),
+		commands.NewReconnectCommand(b.sessionMgr, defaultWs, beforeSwitch),
 		commands.NewStatusCommand(b.sessionMgr),
 	}
 }
@@ -222,19 +231,13 @@ func (b *BuiltinPlugin) ResolveResumeChoice(ctx context.Context, chat domain.Cha
 
 // ResolveSession implements domain.SessionResolver.
 func (b *BuiltinPlugin) ResolveSession(ctx context.Context, msg domain.InboundMessage) (string, error) {
-	info := b.sessionMgr.ActiveSession(msg.ChatRef)
-	if info != nil {
+	if info := b.sessionMgr.ActiveSession(msg.ChatRef); info != nil {
 		return info.SessionID, nil
 	}
-	workspace := b.cfg.Agent.Workspace
-	if workspace == "" {
-		workspace = "."
-	}
-	if err := b.sessionMgr.NewSession(ctx, msg.ChatRef, workspace); err != nil {
+	if err := b.sessionMgr.NewSession(ctx, msg.ChatRef, b.defaultWorkspace()); err != nil {
 		return "", err
 	}
-	info = b.sessionMgr.ActiveSession(msg.ChatRef)
-	if info != nil {
+	if info := b.sessionMgr.ActiveSession(msg.ChatRef); info != nil {
 		return info.SessionID, nil
 	}
 	return "", nil
@@ -243,19 +246,18 @@ func (b *BuiltinPlugin) ResolveSession(ctx context.Context, msg domain.InboundMe
 // RouteMessage implements domain.MessageRouter.
 func (b *BuiltinPlugin) RouteMessage(ctx context.Context, msg domain.InboundMessage, state domain.State) (domain.Action, error) {
 	text := strings.TrimSpace(msg.Text)
-	if strings.HasPrefix(text, "/") {
-		parts := strings.Fields(text[1:])
-		name := strings.ToLower(parts[0])
-		var args []string
-		if len(parts) > 1 {
-			args = parts[1:]
-		}
-		return domain.Action{Kind: domain.ActionCommand, Command: name, Args: args}, nil
+	if !strings.HasPrefix(text, "/") {
+		return domain.Action{Kind: domain.ActionPrompt, Input: convertToPromptInput(msg)}, nil
 	}
-	return domain.Action{
-		Kind:  domain.ActionPrompt,
-		Input: convertToPromptInput(msg),
-	}, nil
+	parts := strings.Fields(text[1:])
+	if len(parts) == 0 {
+		return domain.Action{Kind: domain.ActionPrompt, Input: convertToPromptInput(msg)}, nil
+	}
+	args := parts[1:]
+	if len(parts) == 1 {
+		args = nil
+	}
+	return domain.Action{Kind: domain.ActionCommand, Command: strings.ToLower(parts[0]), Args: args}, nil
 }
 
 // ExecuteAction implements domain.ActionExecutor.
@@ -331,49 +333,135 @@ func convertAttachmentToFileData(att domain.Attachment) domain.FileData {
 	return fd
 }
 
+func episodeID() string {
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	return time.Now().Format("2006-01-02-150405") + "-" + hex.EncodeToString(b[:])
+}
+
+func extractTitleFromSummary(summary string) string {
+	for _, line := range strings.Split(summary, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "title:") {
+			title := strings.TrimSpace(strings.TrimPrefix(line, "title:"))
+			title = strings.Trim(title, "\"")
+			if title != "" {
+				return title
+			}
+		}
+	}
+	return "Session summary"
+}
+
+const (
+	minTranscriptLen = 100 // byte length; ~33 CJK chars or ~100 ASCII chars
+	summarizeTimeout = 30 * time.Second
+)
+
+func (b *BuiltinPlugin) buildBeforeSessionSwitch() func(ctx context.Context, chat domain.ChatRef) {
+	if b.memorySvc == nil {
+		return nil
+	}
+	summarizer := agent.NewAgentSummarizer(b.prompter)
+	return func(ctx context.Context, chat domain.ChatRef) {
+		b.summarizeSessionBeforeSwitch(ctx, chat, summarizer)
+	}
+}
+
+func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(ctx context.Context, chat domain.ChatRef, summarizer *agent.AgentSummarizer) {
+	if b.sessionMgr.ActiveSession(chat) == nil {
+		return
+	}
+	chatKey := chat.CompositeKey()
+	transcript, err := b.memorySvc.ReadUnsummarized(chatKey)
+	if err != nil {
+		slog.Warn("failed to read unsummarized history", "chat", chatKey, "error", err)
+		return
+	}
+	if len(transcript) < minTranscriptLen {
+		return
+	}
+	sumCtx, cancel := context.WithTimeout(ctx, summarizeTimeout)
+	defer cancel()
+	summary, err := summarizer.Summarize(sumCtx, chat, transcript)
+	if err != nil {
+		slog.Warn("session summarization failed", "chat", chatKey, "error", err)
+		return
+	}
+	if strings.TrimSpace(summary) == "" {
+		return
+	}
+	title := extractTitleFromSummary(summary)
+	entry := domain.MemoryEntry{
+		ID:       episodeID(),
+		Category: "episode",
+		Title:    title,
+		Content:  summary,
+		Date:     time.Now().Format("2006-01-02"),
+	}
+	if err := b.memorySvc.Save(entry); err != nil {
+		slog.Warn("failed to save session episode", "chat", chatKey, "error", err)
+		return
+	}
+	if err := b.memorySvc.MarkSummarized(chatKey); err != nil {
+		slog.Warn("failed to mark history as summarized", "chat", chatKey, "error", err)
+	}
+	slog.Info("session summarized", "chat", chatKey, "episode", entry.ID, "title", title)
+}
+
 func (b *BuiltinPlugin) buildAgentService() {
+	exe := b.getExecutablePath()
+	svcCfg := b.buildAgentServiceConfig(exe)
+	svc := b.createAgentService(svcCfg)
+	b.sessionMgr = svc
+	b.prompter = svc
+	b.permHandler = svc
+	b.actObserver = svc
+	b.shutdownFn = svc.Shutdown
+}
+
+func (b *BuiltinPlugin) getExecutablePath() string {
 	exe, err := os.Executable()
 	if err != nil {
 		slog.Error("failed to get executable path", "error", err)
-		exe = os.Args[0]
+		return os.Args[0]
 	}
+	return exe
+}
 
-	agentCmd := strings.Fields(b.cfg.Agent.Command)
-	svcCfg := agent.ServiceConfig{
-		AgentCommand:   agentCmd,
+func (b *BuiltinPlugin) buildAgentServiceConfig(exe string) agent.ServiceConfig {
+	return agent.ServiceConfig{
+		AgentCommand:   strings.Fields(b.cfg.Agent.Command),
 		Workspace:      b.cfg.Agent.Workspace,
 		ConnectTimeout: time.Duration(b.cfg.Agent.ConnectTimeout) * time.Second,
 		PermissionMode: domain.PermissionMode(b.cfg.Permissions.Mode),
 		EventOutput:    b.cfg.Permissions.EventOutput,
-		ChannelName:    defaultChannelName,
 		MCPServers: []acpsdk.McpServer{
 			{
 				Stdio: &acpsdk.McpServerStdio{
 					Name:    "acpclaw-tools",
 					Command: exe,
 					Args:    []string{"mcp"},
+					Env:     []acpsdk.EnvVariable{},
 				},
 			},
 		},
 	}
-	type agentBundle interface {
-		domain.SessionManager
-		domain.Prompter
-		domain.PermissionHandler
-		domain.ActivityObserver
-	}
-	var svc agentBundle
+}
+
+type agentBundle interface {
+	domain.SessionManager
+	domain.Prompter
+	domain.PermissionHandler
+	domain.ActivityObserver
+}
+
+func (b *BuiltinPlugin) createAgentService(svcCfg agent.ServiceConfig) agentBundle {
 	if b.echo {
 		slog.Info("echo mode enabled: using EchoAgentService")
-		svc = agent.NewEchoAgentService()
-	} else {
-		svc = agent.NewAgentService(svcCfg)
+		return agent.NewEchoAgentService()
 	}
-	b.sessionMgr = svc
-	b.prompter = svc
-	b.permHandler = svc
-	b.actObserver = svc
-	b.shutdownFn = svc.Shutdown
+	return agent.NewAgentService(svcCfg)
 }
 
 // CreateTelegramBot creates the Telegram bot from config.
@@ -401,19 +489,26 @@ func buildProxyHTTPClient(proxyAddr string) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	transport, err := buildProxyTransport(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: transport}, nil
+}
+
+func buildProxyTransport(proxyURL *url.URL) (*http.Transport, error) {
 	if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
 		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
 		if err != nil {
 			return nil, err
 		}
-		transport = &http.Transport{
+		return &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			},
-		}
+		}, nil
 	}
-	return &http.Client{Transport: transport}, nil
+	return &http.Transport{Proxy: http.ProxyURL(proxyURL)}, nil
 }
 
 type telegoLogger struct{}

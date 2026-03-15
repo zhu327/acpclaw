@@ -13,7 +13,6 @@ import (
 
 type pendingPrompt struct {
 	input        domain.PromptInput
-	chatID       string
 	token        string
 	notifyMsgID  int
 	replyToMsgID int
@@ -23,11 +22,13 @@ type pendingPrompt struct {
 type promptExecutor struct {
 	sessionMgr        domain.SessionManager
 	prompter          domain.Prompter
-	convMu            sync.Map // chatID -> *sync.Mutex
+	chatLocks         sync.Map // chatID -> *sync.Mutex
 	pendingByChat     map[string]*pendingPrompt
 	pendingMu         sync.Mutex
 	cancelRequested   sync.Map // chatID -> struct{}
 	firstPromptPrefix func(chat domain.ChatRef) string
+	prefixMu          sync.Mutex
+	lastPrefixSession map[string]string // chatID -> sessionID where prefix was last sent
 }
 
 func newPromptExecutor(
@@ -40,11 +41,12 @@ func newPromptExecutor(
 		prompter:          prompter,
 		pendingByChat:     make(map[string]*pendingPrompt),
 		firstPromptPrefix: firstPromptPrefix,
+		lastPrefixSession: make(map[string]string),
 	}
 }
 
-func (e *promptExecutor) getOrCreateMutex(chatID string) *sync.Mutex {
-	v, _ := e.convMu.LoadOrStore(chatID, &sync.Mutex{})
+func (e *promptExecutor) chatLock(chatID string) *sync.Mutex {
+	v, _ := e.chatLocks.LoadOrStore(chatID, &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 
@@ -54,13 +56,22 @@ func randomToken() string {
 	return hex.EncodeToString(b[:])
 }
 
+// parseReplyToMsgID converts a message ID string to int. Returns 0 (no reply-to)
+// for empty or unparseable values, which is a safe default for Telegram API.
+func parseReplyToMsgID(msgID string) int {
+	if msgID == "" {
+		return 0
+	}
+	n, _ := strconv.Atoi(msgID)
+	return n
+}
+
 func (e *promptExecutor) queueBusyPrompt(chatID string, input domain.PromptInput, resp domain.Responder, replyToMsgID int) {
 	token := randomToken()
 	e.pendingMu.Lock()
 	old := e.pendingByChat[chatID]
 	e.pendingByChat[chatID] = &pendingPrompt{
 		input:        input,
-		chatID:       chatID,
 		token:        token,
 		replyToMsgID: replyToMsgID,
 	}
@@ -70,11 +81,15 @@ func (e *promptExecutor) queueBusyPrompt(chatID string, input domain.PromptInput
 		_ = resp.ClearBusyNotification(old.notifyMsgID)
 	}
 	if notifyID, err := resp.ShowBusyNotification(token, replyToMsgID); err == nil {
-		e.pendingMu.Lock()
-		if p := e.pendingByChat[chatID]; p != nil && p.token == token {
-			p.notifyMsgID = notifyID
-		}
-		e.pendingMu.Unlock()
+		e.setPendingNotify(chatID, token, notifyID)
+	}
+}
+
+func (e *promptExecutor) setPendingNotify(chatID, token string, notifyID int) {
+	e.pendingMu.Lock()
+	defer e.pendingMu.Unlock()
+	if p := e.pendingByChat[chatID]; p != nil && p.token == token {
+		p.notifyMsgID = notifyID
 	}
 }
 
@@ -90,14 +105,16 @@ func (e *promptExecutor) popPending(chatID string) *pendingPrompt {
 func (e *promptExecutor) HandleBusySendNow(chat domain.ChatRef, token string) (bool, error) {
 	chatID := chat.CompositeKey()
 	e.pendingMu.Lock()
-	p := e.pendingByChat[chatID]
-	if p == nil || p.token != token {
-		e.pendingMu.Unlock()
-		return false, nil
+	pending := e.pendingByChat[chatID]
+	valid := pending != nil && pending.token == token
+	if valid {
+		e.cancelRequested.Store(chatID, struct{}{})
 	}
-	e.cancelRequested.Store(chatID, struct{}{})
 	e.pendingMu.Unlock()
 
+	if !valid {
+		return false, nil
+	}
 	if err := e.prompter.Cancel(context.Background(), chat); err != nil {
 		e.cancelRequested.Delete(chatID)
 		return false, err
@@ -105,14 +122,32 @@ func (e *promptExecutor) HandleBusySendNow(chat domain.ChatRef, token string) (b
 	return true, nil
 }
 
+func hasReplyContent(reply *domain.AgentReply) bool {
+	return reply != nil && (reply.Text != "" || len(reply.Images) > 0 || len(reply.Files) > 0)
+}
+
+func (e *promptExecutor) applyFirstTurnPrefix(input domain.PromptInput, chat domain.ChatRef, isFirstTurn bool) (domain.PromptInput, bool) {
+	if !isFirstTurn || e.firstPromptPrefix == nil {
+		return input, false
+	}
+	if prefix := e.firstPromptPrefix(chat); prefix != "" {
+		input.Text = prefix + "\n\n---\n\n" + input.Text
+	}
+	return input, false
+}
+
+func (e *promptExecutor) takeNextPending(chatID string, resp domain.Responder) *domain.PromptInput {
+	next := e.popPending(chatID)
+	if next == nil {
+		return nil
+	}
+	_ = resp.ClearBusyNotification(next.notifyMsgID)
+	return &next.input
+}
+
 func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input domain.PromptInput, resp domain.Responder, chat domain.ChatRef, isFirstTurn bool, state domain.State) *domain.Result {
 	for {
-		if isFirstTurn && e.firstPromptPrefix != nil {
-			if prefix := e.firstPromptPrefix(chat); prefix != "" {
-				input.Text = prefix + "\n\n---\n\n" + input.Text
-			}
-			isFirstTurn = false
-		}
+		input, isFirstTurn = e.applyFirstTurnPrefix(input, chat, isFirstTurn)
 		if state != nil {
 			state["user_text"] = input.Text
 		}
@@ -127,38 +162,49 @@ func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input
 			state["reply"] = reply
 		}
 
-		if reply != nil && (reply.Text != "" || len(reply.Images) > 0 || len(reply.Files) > 0) {
+		if hasReplyContent(reply) {
 			return &domain.Result{Reply: reply}
 		}
 
-		p := e.popPending(chatID)
-		if p == nil {
+		nextInput := e.takeNextPending(chatID, resp)
+		if nextInput == nil {
 			return nil
 		}
-		_ = resp.ClearBusyNotification(p.notifyMsgID)
-		input = p.input
+		input = *nextInput
 		if state != nil {
 			state["reply"] = nil
 		}
 	}
 }
 
+const maxPrefixSessionEntries = 1000
+
+func (e *promptExecutor) checkAndUpdateFirstTurn(chatID, sessionID string) bool {
+	e.prefixMu.Lock()
+	defer e.prefixMu.Unlock()
+	lastSessionID, hadPrefix := e.lastPrefixSession[chatID]
+	isFirstTurn := !hadPrefix || lastSessionID != sessionID
+	if isFirstTurn {
+		if len(e.lastPrefixSession) >= maxPrefixSessionEntries {
+			clear(e.lastPrefixSession)
+		}
+		e.lastPrefixSession[chatID] = sessionID
+	}
+	return isFirstTurn
+}
+
 // executePrompt runs the prompt with busy queue logic.
 // Sets state["user_text"] and state["reply"] for StateSaver hooks.
 func (e *promptExecutor) executePrompt(ctx context.Context, action domain.Action, tc *domain.TurnContext) *domain.Result {
 	chatID := tc.Chat.CompositeKey()
-	lock := e.getOrCreateMutex(chatID)
+	lock := e.chatLock(chatID)
 	if !lock.TryLock() {
-		replyToMsgID := 0
-		if tc.Message.ID != "" {
-			replyToMsgID, _ = strconv.Atoi(tc.Message.ID)
-		}
-		e.queueBusyPrompt(chatID, action.Input, tc.Responder, replyToMsgID)
+		e.queueBusyPrompt(chatID, action.Input, tc.Responder, parseReplyToMsgID(tc.Message.ID))
 		return &domain.Result{SuppressOutbound: true}
 	}
 	defer lock.Unlock()
 
-	isFirstTurn := e.sessionMgr.ActiveSession(tc.Chat) == nil
+	isFirstTurn := e.checkAndUpdateFirstTurn(chatID, tc.SessionID)
 	return e.runPromptLoop(ctx, chatID, action.Input, tc.Responder, tc.Chat, isFirstTurn, tc.State)
 }
 

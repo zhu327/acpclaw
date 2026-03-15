@@ -74,7 +74,7 @@ func TestNewCommand_Success(t *testing.T) {
 			UpdatedAt: time.Now(),
 		},
 	}
-	cmd := NewNewCommand(sm, "/default")
+	cmd := NewNewCommand(sm, "/default", nil)
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
 		State: domain.State{},
@@ -92,7 +92,7 @@ func TestNewCommand_Failure(t *testing.T) {
 	sm := &mockSessionManager{
 		newSessionErr: errors.New("session creation failed"),
 	}
-	cmd := NewNewCommand(sm, "/default")
+	cmd := NewNewCommand(sm, "/default", nil)
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
 		State: domain.State{},
@@ -233,6 +233,62 @@ func TestSessionCommand_ListsSessions(t *testing.T) {
 	assert.Contains(t, result.Text, "(active)")
 }
 
+func TestNewCommand_CallsBeforeSwitch(t *testing.T) {
+	var calledChat domain.ChatRef
+	beforeSwitch := func(ctx context.Context, chat domain.ChatRef) {
+		calledChat = chat
+	}
+	sm := &mockSessionManager{
+		activeSession: &domain.SessionInfo{SessionID: "s1", Workspace: "/ws"},
+	}
+	cmd := NewNewCommand(sm, "/default", beforeSwitch)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "42"},
+		State: domain.State{},
+	}
+
+	_, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	assert.Equal(t, "42", calledChat.ChatID)
+	assert.True(t, sm.newSessionCalled, "NewSession should still be called after beforeSwitch")
+}
+
+func TestNewCommand_NilBeforeSwitch(t *testing.T) {
+	sm := &mockSessionManager{
+		activeSession: &domain.SessionInfo{SessionID: "s1", Workspace: "/ws"},
+	}
+	cmd := NewNewCommand(sm, "/default", nil)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, sm.newSessionCalled)
+}
+
+func TestReconnectCommand_CallsBeforeSwitch(t *testing.T) {
+	var calledChat domain.ChatRef
+	beforeSwitch := func(ctx context.Context, chat domain.ChatRef) {
+		calledChat = chat
+	}
+	sm := &mockSessionManager{
+		activeSession: &domain.SessionInfo{SessionID: "s-rc", Workspace: "/rc"},
+	}
+	cmd := NewReconnectCommand(sm, "/default", beforeSwitch)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "99"},
+		State: domain.State{},
+	}
+
+	_, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	assert.Equal(t, "99", calledChat.ChatID)
+	assert.True(t, sm.reconnectCalled)
+}
+
 func TestReconnectCommand_Success(t *testing.T) {
 	sm := &mockSessionManager{
 		activeSession: &domain.SessionInfo{
@@ -242,7 +298,7 @@ func TestReconnectCommand_Success(t *testing.T) {
 			UpdatedAt: time.Now(),
 		},
 	}
-	cmd := NewReconnectCommand(sm, "/default")
+	cmd := NewReconnectCommand(sm, "/default", nil)
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
 		State: domain.State{},

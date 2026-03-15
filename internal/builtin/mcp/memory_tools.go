@@ -3,9 +3,10 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
-	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
@@ -17,156 +18,158 @@ var knowledgeTopics = map[string]string{
 	"notes":         "General knowledge and miscellaneous",
 }
 
-func memoryReadTool() mcplib.Tool {
-	return mcplib.NewTool("memory_read",
-		mcplib.WithDescription("Read the full content of a memory entry by id."),
-		mcplib.WithString("id", mcplib.Required(), mcplib.Description("Memory entry id")),
-	)
-}
-
-func memorySearchTool() mcplib.Tool {
-	return mcplib.NewTool("memory_search",
-		mcplib.WithDescription("Full-text search across all memories. Returns up to 5 matches."),
-		mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query text")),
-		mcplib.WithString("category", mcplib.Description("Filter: identity, episode, knowledge")),
-	)
-}
-
-func memorySaveTool() mcplib.Tool {
-	topicKeys := make([]string, 0, len(knowledgeTopics))
+var knowledgeIDs = func() []string {
+	ids := make([]string, 0, len(knowledgeTopics))
 	for k := range knowledgeTopics {
-		topicKeys = append(topicKeys, k)
+		ids = append(ids, k)
 	}
-	return mcplib.NewTool("memory_save",
-		mcplib.WithDescription(
-			"Save or overwrite a memory entry. For identity: writes SOUL.md. For knowledge: writes knowledge/{id}.md.",
+	slices.Sort(ids)
+	return ids
+}()
+
+func memoryReadTool() mcp.Tool {
+	return mcp.NewTool("memory_read",
+		mcp.WithDescription("Read the full content of a memory entry by id. Use memory_list to discover available ids."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Memory entry id, e.g. 'SOUL', 'owner-profile', 'preferences'")),
+	)
+}
+
+func memorySearchTool() mcp.Tool {
+	return mcp.NewTool("memory_search",
+		mcp.WithDescription("Full-text search across all memories. Returns up to 5 matching entries with content snippets."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Search keywords or phrase, e.g. 'user name', 'project deadline'")),
+		mcp.WithString("category", mcp.Description("Optional filter: 'identity' (SOUL), 'episode' (conversations), or 'knowledge' (structured notes)")),
+	)
+}
+
+func memorySaveTool() mcp.Tool {
+	return mcp.NewTool("memory_save",
+		mcp.WithDescription(
+			"Save or overwrite a memory entry. "+
+				"Use category='identity' to write the agent's personality (SOUL.md, id is ignored). "+
+				"Use category='knowledge' (default) to write structured notes by topic.",
 		),
-		mcplib.WithString("id", mcplib.Description("Memory id, one of: "+strings.Join(topicKeys, ", "))),
-		mcplib.WithString("content", mcplib.Required(), mcplib.Description("Markdown content to save")),
-		mcplib.WithString("category", mcplib.Description("Target: identity or knowledge (default)")),
+		mcp.WithString("id", mcp.Description("Required for knowledge. One of: "+strings.Join(knowledgeIDs, ", "))),
+		mcp.WithString("content", mcp.Required(), mcp.Description("Markdown content to save")),
+		mcp.WithString("category", mcp.Description("'identity' = agent personality (SOUL.md), 'knowledge' = structured notes (default)")),
 	)
 }
 
-func memoryListTool() mcplib.Tool {
-	return mcplib.NewTool("memory_list",
-		mcplib.WithDescription("List all stored memory entries with id, title, category, date."),
-		mcplib.WithString("category", mcplib.Description("Filter: identity, episode, knowledge")),
+func memoryListTool() mcp.Tool {
+	return mcp.NewTool("memory_list",
+		mcp.WithDescription("List all stored memory entries. Returns id, title, category, and date for each entry."),
+		mcp.WithString("category", mcp.Description("Optional filter: 'identity', 'episode', or 'knowledge'")),
 	)
 }
 
-func memoryReadHandler(
-	svc MemoryStore,
-) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		id, _ := mcplib.ParseArgument(req, "id", "").(string)
+func memoryReadHandler(svc MemoryStore) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := mcp.ParseString(req, "id", "")
 		if id == "" {
-			return mcplib.NewToolResultError("id is required"), nil
+			return mcp.NewToolResultError("id is required"), nil
 		}
 		entry, err := svc.Read(id)
 		if err != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("read error: %v", err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("read error: %v", err)), nil
 		}
 		if entry == nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("no memory found with id %q", id)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("no memory found with id %q", id)), nil
 		}
-		return mcplib.NewToolResultText(formatEntry(entry)), nil
+		return mcp.NewToolResultText(formatEntry(entry)), nil
 	}
 }
 
-func memorySearchHandler(
-	svc MemoryStore,
-) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		query, _ := mcplib.ParseArgument(req, "query", "").(string)
-		category, _ := mcplib.ParseArgument(req, "category", "").(string)
+func memorySearchHandler(svc MemoryStore) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		query := mcp.ParseString(req, "query", "")
 		if query == "" {
-			return mcplib.NewToolResultError("query is required"), nil
+			return mcp.NewToolResultError("query is required"), nil
 		}
+		category := mcp.ParseString(req, "category", "")
 		results, err := svc.Search(query, category)
 		if err != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
 		}
 		if len(results) == 0 {
-			return mcplib.NewToolResultText("No matching memories found."), nil
+			return mcp.NewToolResultText("No matching memories found."), nil
 		}
-		var parts []string
-		for _, r := range results {
-			parts = append(parts, formatEntry(&r))
+		parts := make([]string, len(results))
+		for i := range results {
+			parts[i] = formatEntry(&results[i])
 		}
-		return mcplib.NewToolResultText(strings.Join(parts, "\n\n---\n\n")), nil
+		return mcp.NewToolResultText(strings.Join(parts, "\n\n---\n\n")), nil
 	}
 }
 
-func memorySaveHandler(
-	svc MemoryStore,
-) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		id, _ := mcplib.ParseArgument(req, "id", "").(string)
-		content, _ := mcplib.ParseArgument(req, "content", "").(string)
-		category, _ := mcplib.ParseArgument(req, "category", "").(string)
+func memorySaveHandler(svc MemoryStore) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := mcp.ParseString(req, "id", "")
+		content := mcp.ParseString(req, "content", "")
 		if content == "" {
-			return mcplib.NewToolResultError("content is required"), nil
+			return mcp.NewToolResultError("content is required"), nil
 		}
-		if category == "" {
-			category = "knowledge"
+		category := mcp.ParseString(req, "category", "knowledge")
+
+		if errRes := validateSaveParams(id, category); errRes != nil {
+			return errRes, nil
 		}
-		if category == "knowledge" {
-			if id == "" {
-				return mcplib.NewToolResultError("id is required for knowledge"), nil
-			}
-			if _, ok := knowledgeTopics[id]; !ok {
-				keys := make([]string, 0, len(knowledgeTopics))
-				for k := range knowledgeTopics {
-					keys = append(keys, k)
-				}
-				return mcplib.NewToolResultError(
-					fmt.Sprintf("invalid id %q, must be one of: %s", id, strings.Join(keys, ", ")),
-				), nil
-			}
-		}
-		title := id
-		if category == "identity" {
-			id = "SOUL"
-			title = "Soul — Personality & Values"
-		} else if t, ok := knowledgeTopics[id]; ok {
-			title = t
-		}
-		entry := domain.MemoryEntry{
-			ID:       id,
-			Category: category,
-			Title:    title,
-			Content:  content,
-		}
+
+		entryID, title := resolveEntryIDAndTitle(id, category)
+		entry := domain.MemoryEntry{ID: entryID, Category: category, Title: title, Content: content}
 		if err := svc.Save(entry); err != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("save error: %v", err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("save error: %v", err)), nil
 		}
-		return mcplib.NewToolResultText(fmt.Sprintf("Saved: id=%q category=%q", id, category)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Saved: id=%q category=%q", entryID, category)), nil
 	}
 }
 
-func memoryListHandler(
-	svc MemoryStore,
-) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		category, _ := mcplib.ParseArgument(req, "category", "").(string)
+func validateSaveParams(id, category string) *mcp.CallToolResult {
+	if category != "knowledge" {
+		return nil
+	}
+	if id == "" {
+		return mcp.NewToolResultError("id is required for knowledge")
+	}
+	if _, ok := knowledgeTopics[id]; !ok {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid id %q, must be one of: %s", id, strings.Join(knowledgeIDs, ", ")))
+	}
+	return nil
+}
+
+func resolveEntryIDAndTitle(id, category string) (entryID, title string) {
+	if category == "identity" {
+		return "SOUL", "Soul — Personality & Values"
+	}
+	if t, ok := knowledgeTopics[id]; ok {
+		return id, t
+	}
+	return id, id
+}
+
+func memoryListHandler(svc MemoryStore) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		category := mcp.ParseString(req, "category", "")
 		items, err := svc.List(category)
 		if err != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("list error: %v", err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("list error: %v", err)), nil
 		}
 		if len(items) == 0 {
-			return mcplib.NewToolResultText("No memories stored yet."), nil
+			return mcp.NewToolResultText("No memories stored yet."), nil
 		}
-		var lines []string
-		for _, item := range items {
-			tags := ""
-			if len(item.Tags) > 0 {
-				tags = "  tags: " + strings.Join(item.Tags, ", ")
-			}
-			lines = append(lines, fmt.Sprintf("- id: %s | title: %s | category: %s | date: %s%s",
-				item.ID, item.Title, item.Category, item.Date, tags))
+		lines := make([]string, len(items))
+		for i, item := range items {
+			lines[i] = formatListLine(&item)
 		}
-		return mcplib.NewToolResultText(strings.Join(lines, "\n")), nil
+		return mcp.NewToolResultText(strings.Join(lines, "\n")), nil
 	}
+}
+
+func formatListLine(item *domain.MemoryEntry) string {
+	base := fmt.Sprintf("- id: %s | title: %s | category: %s | date: %s", item.ID, item.Title, item.Category, item.Date)
+	if len(item.Tags) > 0 {
+		return base + "  tags: " + strings.Join(item.Tags, ", ")
+	}
+	return base
 }
 
 func formatEntry(e *domain.MemoryEntry) string {

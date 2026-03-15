@@ -314,10 +314,7 @@ func shouldEmitClosedActivity(block *domain.ActivityBlock) bool {
 	if block.Kind == domain.ActivityThink {
 		return true
 	}
-	if strings.TrimSpace(block.Text) != "" {
-		return true
-	}
-	return block.Status == "failed"
+	return block.Status == "completed" || block.Status == "failed"
 }
 
 func (c *AcpClient) closeAndCollectActiveBlock(status string, isPromptEnd bool) *domain.ActivityBlock {

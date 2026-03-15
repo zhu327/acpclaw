@@ -84,7 +84,7 @@ func (c *TelegramChannel) Start(ctx context.Context, handler domain.MessageHandl
 			return nil
 		}
 		if !c.isAllowed(msg.From.ID, msg.From.Username) {
-			c.sendPlainText(msg.Chat.ID, "Access denied for this bot.")
+			c.sendPlainText(ctx, msg.Chat.ID, "Access denied for this bot.")
 			return nil
 		}
 
@@ -93,7 +93,7 @@ func (c *TelegramChannel) Start(ctx context.Context, handler domain.MessageHandl
 			return nil
 		}
 
-		resp := NewTelegramResponder(c.bot, msg.Chat.ID, msg.MessageID)
+		resp := NewTelegramResponder(ctx, c.bot, msg.Chat.ID, msg.MessageID)
 		handler(ctx, inbound, resp)
 		return nil
 	}, th.AnyMessage())
@@ -170,7 +170,7 @@ func (c *TelegramChannel) handlePermissionCallback(ctx *th.Context, query telego
 	if len(parts) != 3 {
 		return nil
 	}
-	if !c.checkCallbackAccess(query) {
+	if !c.checkCallbackAccess(ctx.Context(), query) {
 		return nil
 	}
 
@@ -191,7 +191,7 @@ func (c *TelegramChannel) handlePermissionCallback(ctx *th.Context, query telego
 	if label == "" {
 		label = "Request expired."
 	}
-	c.answerCallback(query, label)
+	c.answerCallback(ctx.Context(), query, label)
 
 	if query.Message != nil {
 		chatID := query.Message.GetChat().ID
@@ -230,7 +230,7 @@ func chatRefFromTelegramID(chatID int64) domain.ChatRef {
 }
 
 func (c *TelegramChannel) handleBusyCallback(ctx *th.Context, query telego.CallbackQuery) error {
-	if !c.checkCallbackAccess(query) {
+	if !c.checkCallbackAccess(ctx.Context(), query) {
 		return nil
 	}
 
@@ -239,22 +239,22 @@ func (c *TelegramChannel) handleBusyCallback(ctx *th.Context, query telego.Callb
 	chat := chatRefFromTelegramID(chatID)
 
 	if c.callbacks == nil {
-		c.answerCallback(query, "Already sent.")
+		c.answerCallback(ctx.Context(), query, "Already sent.")
 		return nil
 	}
 	ok, err := c.callbacks.HandleBusySendNow(chat, token)
 	if err != nil {
-		c.answerCallback(query, "Cancel failed.")
+		c.answerCallback(ctx.Context(), query, "Cancel failed.")
 		c.clearCallbackReplyMarkup(ctx.Context(), query)
 		return nil
 	}
 	if !ok {
-		c.answerCallback(query, "Already sent.")
+		c.answerCallback(ctx.Context(), query, "Already sent.")
 		c.clearCallbackReplyMarkup(ctx.Context(), query)
 		return nil
 	}
 
-	c.answerCallback(query, "✅ Sent.")
+	c.answerCallback(ctx.Context(), query, "✅ Sent.")
 	if query.Message != nil {
 		msgID := query.Message.GetMessageID()
 		_, _ = c.bot.EditMessageText(ctx.Context(), &telego.EditMessageTextParams{
@@ -272,13 +272,13 @@ func (c *TelegramChannel) handleBusyCallback(ctx *th.Context, query telego.Callb
 }
 
 func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.CallbackQuery) error {
-	if !c.checkCallbackAccess(query) {
+	if !c.checkCallbackAccess(ctx.Context(), query) {
 		return nil
 	}
 	indexStr := strings.TrimPrefix(query.Data, "resume|")
 	index, err := strconv.Atoi(indexStr)
 	if err != nil {
-		c.answerCallback(query, "Invalid selection.")
+		c.answerCallback(ctx.Context(), query, "Invalid selection.")
 		return nil
 	}
 
@@ -286,7 +286,7 @@ func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.Cal
 	chat := chatRefFromTelegramID(chatID)
 
 	if c.callbacks == nil {
-		c.answerCallback(query, "Selection expired.")
+		c.answerCallback(ctx.Context(), query, "Selection expired.")
 		return nil
 	}
 
@@ -294,17 +294,17 @@ func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.Cal
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "expired") {
-			c.answerCallback(query, "Selection expired.")
+			c.answerCallback(ctx.Context(), query, "Selection expired.")
 		} else if strings.Contains(errMsg, "invalid") {
-			c.answerCallback(query, "Invalid selection.")
+			c.answerCallback(ctx.Context(), query, "Invalid selection.")
 		} else {
-			c.answerCallback(query, "Failed to resume.")
-			c.sendPlainText(chatID, "❌ Failed to resume session.")
+			c.answerCallback(ctx.Context(), query, "Failed to resume.")
+			c.sendPlainText(ctx.Context(), chatID, "❌ Failed to resume session.")
 		}
 		return nil
 	}
 
-	c.answerCallback(query, "Session resumed.")
+	c.answerCallback(ctx.Context(), query, "Session resumed.")
 	if query.Message != nil {
 		msgID := query.Message.GetMessageID()
 		_, _ = c.bot.EditMessageText(ctx.Context(), &telego.EditMessageTextParams{
@@ -313,7 +313,7 @@ func (c *TelegramChannel) handleResumeCallback(ctx *th.Context, query telego.Cal
 			Text:      fmt.Sprintf("Resumed session: %s\nWorkspace: %s", s.SessionID, s.Workspace),
 		})
 	}
-	sendOutboundBestEffort(c.bot, chatID, domain.OutboundMessage{
+	sendOutboundBestEffort(ctx.Context(), c.bot, chatID, domain.OutboundMessage{
 		Text: fmt.Sprintf("Session resumed: `%s` in `%s`", s.SessionID, s.Workspace),
 	})
 	return nil
@@ -328,13 +328,13 @@ func getChatIDFromQuery(query telego.CallbackQuery) int64 {
 	return query.From.ID
 }
 
-func (c *TelegramChannel) answerCallback(query telego.CallbackQuery, text string) {
-	_ = c.bot.AnswerCallbackQuery(context.TODO(), tu.CallbackQuery(query.ID).WithText(text))
+func (c *TelegramChannel) answerCallback(ctx context.Context, query telego.CallbackQuery, text string) {
+	_ = c.bot.AnswerCallbackQuery(ctx, tu.CallbackQuery(query.ID).WithText(text))
 }
 
-func (c *TelegramChannel) checkCallbackAccess(query telego.CallbackQuery) bool {
+func (c *TelegramChannel) checkCallbackAccess(ctx context.Context, query telego.CallbackQuery) bool {
 	if query.From.ID == 0 || !c.isAllowed(query.From.ID, query.From.Username) {
-		c.answerCallback(query, "Access denied.")
+		c.answerCallback(ctx, query, "Access denied.")
 		return false
 	}
 	return true
@@ -359,22 +359,22 @@ func (c *TelegramChannel) isAllowed(userID int64, username string) bool {
 	return c.allowlistChecker.IsAllowed(userID, username)
 }
 
-func (c *TelegramChannel) sendPlainText(chatID int64, text string) {
-	_, _ = c.bot.SendMessage(context.TODO(), tu.Message(tu.ID(chatID), text))
+func (c *TelegramChannel) sendPlainText(ctx context.Context, chatID int64, text string) {
+	_, _ = c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), text))
 }
 
 // sendOutboundBestEffort sends an OutboundMessage; logs at debug level on failure.
-func sendOutboundBestEffort(bot *telego.Bot, chatID int64, msg domain.OutboundMessage) {
-	if err := sendOutbound(bot, chatID, msg); err != nil {
+func sendOutboundBestEffort(ctx context.Context, bot *telego.Bot, chatID int64, msg domain.OutboundMessage) {
+	if err := sendOutbound(ctx, bot, chatID, msg); err != nil {
 		slog.Debug("send outbound failed (best effort)", "chat_id", chatID, "error", err)
 	}
 }
 
 // sendOutbound sends an OutboundMessage to a Telegram chat.
-func sendOutbound(bot *telego.Bot, chatID int64, msg domain.OutboundMessage) error {
+func sendOutbound(ctx context.Context, bot *telego.Bot, chatID int64, msg domain.OutboundMessage) error {
 	for _, img := range msg.Images {
 		file := tu.FileFromBytes(img.Data, img.Name)
-		if _, err := bot.SendPhoto(context.TODO(), &telego.SendPhotoParams{
+		if _, err := bot.SendPhoto(ctx, &telego.SendPhotoParams{
 			ChatID: tu.ID(chatID),
 			Photo:  file,
 		}); err != nil {
@@ -383,7 +383,7 @@ func sendOutbound(bot *telego.Bot, chatID int64, msg domain.OutboundMessage) err
 	}
 	for _, f := range msg.Files {
 		file := tu.FileFromBytes(f.Data, f.Name)
-		if _, err := bot.SendDocument(context.TODO(), &telego.SendDocumentParams{
+		if _, err := bot.SendDocument(ctx, &telego.SendDocumentParams{
 			ChatID:   tu.ID(chatID),
 			Document: file,
 		}); err != nil {
@@ -394,8 +394,8 @@ func sendOutbound(bot *telego.Bot, chatID int64, msg domain.OutboundMessage) err
 		chunks := RenderMarkdown(msg.Text)
 		for _, chunk := range chunks {
 			params := tu.Message(tu.ID(chatID), chunk.Text).WithParseMode(telego.ModeMarkdownV2)
-			if _, err := bot.SendMessage(context.TODO(), params); err != nil {
-				_, _ = bot.SendMessage(context.TODO(), tu.Message(tu.ID(chatID), msg.Text))
+			if _, err := bot.SendMessage(ctx, params); err != nil {
+				_, _ = bot.SendMessage(ctx, tu.Message(tu.ID(chatID), msg.Text))
 				break
 			}
 		}

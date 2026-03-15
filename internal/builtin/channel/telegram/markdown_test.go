@@ -80,7 +80,7 @@ func TestRenderMarkdown_Strikethrough(t *testing.T) {
 
 func TestRenderMarkdown_Link(t *testing.T) {
 	result := markdownToMDV2("[click](https://example.com)")
-	assert.Equal(t, `[click](https://example\.com)`, result)
+	assert.Equal(t, `[click](https://example.com)`, result)
 }
 
 func TestRenderMarkdown_LongTextSplits(t *testing.T) {

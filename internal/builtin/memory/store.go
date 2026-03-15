@@ -208,12 +208,6 @@ func (s *Store) List(category string) ([]domain.MemoryEntry, error) {
 	return scanEntries(rows)
 }
 
-// Delete removes a memory entry by ID.
-func (s *Store) Delete(id string) error {
-	_, err := s.db.Exec(`DELETE FROM memory WHERE id = ?`, id)
-	return err
-}
-
 // Reindex rebuilds the index from Markdown files in memoryDir.
 // It first clears all existing records, then scans: <memoryDir>/SOUL.md,
 // <memoryDir>/knowledge/*.md, <memoryDir>/episode/*.md

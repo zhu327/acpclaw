@@ -21,7 +21,6 @@ type ServiceConfig struct {
 	PermissionMode domain.PermissionMode
 	EventOutput    string // "stdout" or "off"
 	MCPServers     []acpsdk.McpServer
-	ChannelName    string // channel identifier (e.g., "telegram", "slack") for context tracking
 	// AgentEnv is the explicit set of env var names to pass to agent subprocesses.
 	// When nil, a safe default allowlist is used (PATH, HOME, LANG, etc.).
 	// Set to an empty slice to pass no env vars at all.

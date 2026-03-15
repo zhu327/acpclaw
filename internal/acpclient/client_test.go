@@ -637,3 +637,38 @@ func TestSessionUpdate_ThinkBlockCompletedThenPostToolTextInReply(t *testing.T) 
 	assert.Equal(t, "completed", reply.Activities[0].Status)
 	assert.Equal(t, "draft plan", reply.Activities[0].Text)
 }
+
+func TestSessionUpdate_CompletedToolWithNoTextEmitsActivity(t *testing.T) {
+	var received []domain.ActivityBlock
+	client := acpclient.NewAcpClient(func(b domain.ActivityBlock) {
+		received = append(received, b)
+	}, nil)
+	client.StartCapture()
+
+	err := client.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		Update: acpsdk.SessionUpdate{
+			ToolCall: &acpsdk.SessionUpdateToolCall{
+				ToolCallId: "tc-no-text",
+				Kind:       acpsdk.ToolKindEdit,
+				Title:      "Edit file.go",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	status := acpsdk.ToolCallStatusCompleted
+	err = client.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+		Update: acpsdk.SessionUpdate{
+			ToolCallUpdate: &acpsdk.SessionToolCallUpdate{
+				ToolCallId: "tc-no-text",
+				Status:     &status,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, received, 1, "completed tool with no text should still emit activity")
+	assert.Equal(t, "completed", received[0].Status)
+	assert.Equal(t, domain.ActivityEdit, received[0].Kind)
+	assert.Equal(t, "", received[0].Text)
+}

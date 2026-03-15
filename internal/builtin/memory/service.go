@@ -57,13 +57,14 @@ func (s *Service) Read(id string) (*domain.MemoryEntry, error) {
 	return s.store.Get(id)
 }
 
-// BuildSessionContext returns memory context for first prompt: owner-profile, preferences, recent episodes.
+// BuildSessionContext returns memory context for first prompt: SOUL, owner-profile, preferences, recent episodes.
 func (s *Service) BuildSessionContext(ctx context.Context) (string, error) {
 	var sections []string
 	for _, slot := range []struct {
 		id     string
 		header string
 	}{
+		{"SOUL", "## Identity"},
 		{"owner-profile", "## Owner"},
 		{"preferences", "## Preferences"},
 	} {
@@ -147,62 +148,16 @@ func (s *Service) AppendHistory(chatID, role, text string) error {
 	return s.history.Append(chatID, role, text)
 }
 
-const (
-	minTranscriptLenForSummarize = 100
-	maxTranscriptLenForSummarize = 50000
-)
-
-// SummarizeSession reads unsummarized history, prompts the agent for a summary, and saves an episode.
-func (s *Service) SummarizeSession(ctx context.Context, chatID string, summarizer domain.Summarizer) error {
-	if summarizer == nil {
-		return nil
-	}
-
-	transcript, err := s.history.ReadUnsummarized(chatID)
-	if err != nil || len(transcript) < minTranscriptLenForSummarize {
-		return nil // Conversation too short; skip.
-	}
-	if len(transcript) > maxTranscriptLenForSummarize {
-		transcript = transcript[len(transcript)-maxTranscriptLenForSummarize:]
-	}
-
-	summary, err := summarizer.Summarize(ctx, transcript)
-	if err != nil {
-		return fmt.Errorf("summarize: %w", err)
-	}
-	if summary == "" {
-		return nil
-	}
-
-	entry := domain.MemoryEntry{
-		ID:       buildEpisodeFileName(chatID),
-		Category: "episode",
-		Title:    extractTitle(summary),
-		Content:  summary,
-		Date:     time.Now().Format("2006-01-02"),
-	}
-	// Do not MarkSummarized on failure; next run will retry the same content.
-	if err := s.Save(entry); err != nil {
-		return fmt.Errorf("save episode: %w", err)
-	}
-	return s.history.MarkSummarized(chatID)
+// ReadUnsummarized reads all history content after the last summarized offset.
+// chatKey should be chat.CompositeKey() (e.g. "telegram:12345").
+func (s *Service) ReadUnsummarized(chatKey string) (string, error) {
+	return s.history.ReadUnsummarized(chatKey)
 }
 
-// sanitizeForFilename removes non-alphanumeric characters to produce a safe filename.
-func sanitizeForFilename(s string) string {
-	return strings.Map(func(r rune) rune {
-		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			return r
-		}
-		return '_'
-	}, s)
-}
-
-func buildEpisodeFileName(chatID string) string {
-	return fmt.Sprintf("%s_%s_%d",
-		time.Now().Format("2006-01-02"),
-		sanitizeForFilename(chatID),
-		time.Now().Unix())
+// MarkSummarized records the current end-of-file offsets so future reads skip them.
+// chatKey should be chat.CompositeKey() (e.g. "telegram:12345").
+func (s *Service) MarkSummarized(chatKey string) error {
+	return s.history.MarkSummarized(chatKey)
 }
 
 // Reindex rebuilds the SQLite index from Markdown files on disk.
@@ -258,27 +213,6 @@ func buildMarkdownFile(e domain.MemoryEntry) string {
 	sb.WriteString("---\n\n")
 	sb.WriteString(e.Content)
 	return sb.String()
-}
-
-func extractTitle(text string) string {
-	// Try to extract title from frontmatter
-	title, _, _, _ := parseFrontmatter(text)
-	if title != "" {
-		return title
-	}
-	// Fallback: use first non-empty line
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.TrimPrefix(line, "#")
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "---") {
-			if len(line) > 60 {
-				line = line[:60]
-			}
-			return line
-		}
-	}
-	return "Session Summary"
 }
 
 // initializeTemplates copies template files from templateFS to memory directory on first run.

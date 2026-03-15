@@ -55,7 +55,7 @@ type ActivityObserver interface {
 	SetActivityHandler(fn func(chat ChatRef, block ActivityBlock))
 }
 
-// Summarizer generates a textual summary of a conversation transcript.
+// Summarizer generates session summaries from conversation transcripts.
 type Summarizer interface {
-	Summarize(ctx context.Context, transcript string) (summary string, err error)
+	Summarize(ctx context.Context, chat ChatRef, transcript string) (string, error)
 }

@@ -50,14 +50,6 @@ func (s *Store) loadJobsLocked(channel, chatID string) ([]domain.CronJob, error)
 	return jobs, nil
 }
 
-// SaveJobs saves all jobs for a specific channel and chat ID.
-func (s *Store) SaveJobs(channel, chatID string, jobs []domain.CronJob) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.saveJobsLocked(channel, chatID, jobs)
-}
-
 func (s *Store) saveJobsLocked(channel, chatID string, jobs []domain.CronJob) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err

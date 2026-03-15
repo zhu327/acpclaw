@@ -34,14 +34,11 @@ func escapeChar(r rune) string {
 	return string(r)
 }
 
-// escapeText escapes all MarkdownV2 special characters in a plain text segment.
-func escapeText(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		b.WriteString(escapeChar(r))
-	}
-	return b.String()
+// escapeURL escapes only the characters that need escaping inside a MarkdownV2 link URL: ')' and '\'.
+func escapeURL(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `)`, `\)`)
+	return s
 }
 
 // escapeCodeOrPreContent escapes backticks and backslashes inside inline code or pre blocks.
@@ -238,7 +235,7 @@ func markdownToMDV2(input string) string {
 				}
 				if urlEnd != -1 {
 					linkText := markdownToMDV2(string(runes[i+1 : textEnd]))
-					url := escapeText(string(runes[textEnd+2 : urlEnd]))
+					url := escapeURL(string(runes[textEnd+2 : urlEnd]))
 					out.WriteString("[")
 					out.WriteString(linkText)
 					out.WriteString("](")

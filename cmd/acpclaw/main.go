@@ -114,7 +114,7 @@ func startCronScheduler(ctx context.Context, cfg *config.Config, bot *telego.Bot
 			return
 		}
 		chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
-		resp := telegram.NewBackgroundResponder(bot, chatIDInt)
+		resp := telegram.NewBackgroundResponder(ctx, bot, chatIDInt)
 		msg := domain.InboundMessage{
 			ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
 			Text:    job.Message,

@@ -27,7 +27,6 @@ type CronConfig struct {
 // MemoryConfig holds memory system configuration.
 type MemoryConfig struct {
 	Enabled            bool `yaml:"enabled"`
-	AutoSummarize      bool `yaml:"auto_summarize"`
 	FirstPromptContext bool `yaml:"first_prompt_context"`
 }
 
@@ -116,7 +115,6 @@ func defaults() *Config {
 		},
 		Memory: MemoryConfig{
 			Enabled:            false,
-			AutoSummarize:      false,
 			FirstPromptContext: false,
 		},
 		Cron: CronConfig{

@@ -14,20 +14,24 @@ import (
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
-// permissionAction maps internal action IDs to display labels and callback data.
+// permissionAction maps ACP SDK permission decision strings to Telegram UI labels
+// and callback data. Keys must match domain.PermissionDecision values from the SDK.
 var permissionAction = map[string]struct {
 	label string
 	cb    string
 }{
-	"always_allow": {"Always", "always"},
-	"allow_once":   {"This time", "once"},
-	"deny":         {"Deny", "deny"},
+	"always":    {"Always", "always"},
+	"this_time": {"This time", "once"},
+	"deny":      {"Deny", "deny"},
 }
 
 const activityAccumulatorLimit = 4000
 
 // TelegramResponder implements domain.Responder for Telegram.
+// ctx is the request-scoped context from the incoming Telegram update handler.
+// The responder must not outlive this context — all bot API calls use it.
 type TelegramResponder struct {
+	ctx    context.Context
 	bot    *telego.Bot
 	chatID int64
 	msgID  int
@@ -40,22 +44,24 @@ type TelegramResponder struct {
 var _ domain.Responder = (*TelegramResponder)(nil)
 
 // NewTelegramResponder creates a new TelegramResponder.
-func NewTelegramResponder(bot *telego.Bot, chatID int64, msgID int) *TelegramResponder {
-	return &TelegramResponder{bot: bot, chatID: chatID, msgID: msgID}
+func NewTelegramResponder(ctx context.Context, bot *telego.Bot, chatID int64, msgID int) *TelegramResponder {
+	return &TelegramResponder{ctx: ctx, bot: bot, chatID: chatID, msgID: msgID}
 }
 
 // ChannelKind returns the channel kind.
 func (r *TelegramResponder) ChannelKind() string { return "telegram" }
 
-// BackgroundResponder implements domain.Responder for background tasks.
+// BackgroundResponder implements domain.Responder for background tasks (e.g. cron).
+// ctx is the application-level context; it lives for the duration of the process.
 type BackgroundResponder struct {
+	ctx    context.Context
 	bot    *telego.Bot
 	chatID int64
 }
 
 // NewBackgroundResponder creates a new BackgroundResponder.
-func NewBackgroundResponder(bot *telego.Bot, chatID int64) *BackgroundResponder {
-	return &BackgroundResponder{bot: bot, chatID: chatID}
+func NewBackgroundResponder(ctx context.Context, bot *telego.Bot, chatID int64) *BackgroundResponder {
+	return &BackgroundResponder{ctx: ctx, bot: bot, chatID: chatID}
 }
 
 // ChannelKind returns the channel kind.
@@ -63,76 +69,70 @@ func (r *BackgroundResponder) ChannelKind() string { return "telegram" }
 
 // Reply sends an outbound message to the chat.
 func (r *BackgroundResponder) Reply(msg domain.OutboundMessage) error {
-	return sendOutbound(r.bot, r.chatID, msg)
+	return sendOutbound(r.ctx, r.bot, r.chatID, msg)
 }
 
-func (r *BackgroundResponder) ShowPermissionUI(req domain.ChannelPermissionRequest) error {
-	return nil
-}
-func (r *BackgroundResponder) ShowTypingIndicator() error { return nil }
-func (r *BackgroundResponder) SendActivity(block domain.ActivityBlock) error {
-	return nil
-}
-
+func (r *BackgroundResponder) ShowPermissionUI(req domain.ChannelPermissionRequest) error { return nil }
+func (r *BackgroundResponder) ShowTypingIndicator() error                                 { return nil }
+func (r *BackgroundResponder) SendActivity(block domain.ActivityBlock) error              { return nil }
 func (r *BackgroundResponder) ShowBusyNotification(token string, replyToMsgID int) (int, error) {
 	return 0, nil
 }
-func (r *BackgroundResponder) ClearBusyNotification(notifyMsgID int) error { return nil }
-func (r *BackgroundResponder) ShowResumeKeyboard(sessions []domain.SessionChoice) error {
-	return nil
-}
+func (r *BackgroundResponder) ClearBusyNotification(notifyMsgID int) error              { return nil }
+func (r *BackgroundResponder) ShowResumeKeyboard(sessions []domain.SessionChoice) error { return nil }
 
 // Reply sends an outbound message to the chat.
 func (r *TelegramResponder) Reply(msg domain.OutboundMessage) error {
-	return sendOutbound(r.bot, r.chatID, msg)
+	return sendOutbound(r.ctx, r.bot, r.chatID, msg)
 }
 
 // ShowPermissionUI sends an inline keyboard for permission approval.
 func (r *TelegramResponder) ShowPermissionUI(req domain.ChannelPermissionRequest) error {
-	var row []telego.InlineKeyboardButton
+	var buttons []telego.InlineKeyboardButton
 	for _, action := range req.AvailableActions {
-		pa, ok := permissionAction[action]
+		perm, ok := permissionAction[action]
 		if !ok {
 			continue
 		}
-		row = append(row, tu.InlineKeyboardButton(pa.label).WithCallbackData(fmt.Sprintf("perm|%s|%s", req.ID, pa.cb)))
+		buttons = append(buttons, tu.InlineKeyboardButton(perm.label).WithCallbackData(fmt.Sprintf("perm|%s|%s", req.ID, perm.cb)))
 	}
-	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(row...))
+	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(buttons...))
 
 	text := "**⚠️ Permission required**"
 	if req.Tool != "" {
 		text += "\n\n" + req.Tool
 	}
-	return sendWithMarkdownFallback(r.bot, r.chatID, text, keyboard)
+	return sendWithMarkdownFallback(r.ctx, r.bot, r.chatID, text, keyboard)
 }
 
 // sendWithMarkdownFallback sends a message using MarkdownV2, falling back to plain text on failure.
-func sendWithMarkdownFallback(bot *telego.Bot, chatID int64, text string, keyboard *telego.InlineKeyboardMarkup) error {
-	chunks := RenderMarkdown(text)
+func sendWithMarkdownFallback(ctx context.Context, bot *telego.Bot, chatID int64, text string, keyboard *telego.InlineKeyboardMarkup) error {
 	plainParams := tu.Message(tu.ID(chatID), text)
 	if keyboard != nil {
 		plainParams = plainParams.WithReplyMarkup(keyboard)
 	}
+	chunks := RenderMarkdown(text)
 	if len(chunks) == 0 {
-		_, err := bot.SendMessage(context.TODO(), plainParams)
+		_, err := bot.SendMessage(ctx, plainParams)
 		return err
 	}
 	mdParams := tu.Message(tu.ID(chatID), chunks[0].Text).WithParseMode(telego.ModeMarkdownV2)
 	if keyboard != nil {
 		mdParams = mdParams.WithReplyMarkup(keyboard)
 	}
-	if _, err := bot.SendMessage(context.TODO(), mdParams); err != nil {
-		if _, err2 := bot.SendMessage(context.TODO(), plainParams); err2 != nil {
-			slog.Error("failed to send message", "chat_id", chatID, "error", err2)
-			return err2
-		}
+	if _, err := bot.SendMessage(ctx, mdParams); err == nil {
+		return nil
+	}
+	if _, err := bot.SendMessage(ctx, plainParams); err != nil {
+		slog.Error("failed to send message", "chat_id", chatID, "error", err)
+		return err
 	}
 	return nil
 }
 
 // ShowTypingIndicator sends a typing chat action.
 func (r *TelegramResponder) ShowTypingIndicator() error {
-	return r.bot.SendChatAction(context.TODO(), &telego.SendChatActionParams{
+	return r.bot.SendChatAction(r.ctx, &telego.SendChatActionParams{
 		ChatID: tu.ID(r.chatID),
 		Action: "typing",
 	})
@@ -140,51 +140,60 @@ func (r *TelegramResponder) ShowTypingIndicator() error {
 
 // SendActivity sends an agent activity block as a message.
 func (r *TelegramResponder) SendActivity(block domain.ActivityBlock) error {
-	var line string
-	switch block.Kind {
-	case domain.ActivityThink:
-		text := block.Text
-		if text != "" {
-			text = truncateRunes(text, maxThinkTextRunes)
-		}
-		line = "**" + block.Label + "**"
-		if text != "" {
-			line += "\n" + text
-		}
-	case domain.ActivityExecute:
-		line = formatActivityMessage(block)
-	default:
-		line = formatActivityLine(block)
-	}
+	line := buildActivityLine(block)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.mustSendNewActivity(line) {
+		return r.sendNewActivityMessage(line)
+	}
+
+	r.activityText = r.activityText + "\n" + line
+	if err := r.updateActivityMessage(); err != nil {
+		return r.sendNewActivityMessage(line)
+	}
+	return nil
+}
+
+func (r *TelegramResponder) mustSendNewActivity(line string) bool {
 	if r.activityMsgID == 0 {
-		return r.sendNewActivityMessage(line)
+		return true
 	}
+	return runeCount(r.activityText+"\n"+line) > activityAccumulatorLimit
+}
 
-	newText := r.activityText + "\n" + line
-	if len([]rune(newText)) > activityAccumulatorLimit {
-		return r.sendNewActivityMessage(line)
-	}
-
-	r.activityText = newText
+func (r *TelegramResponder) updateActivityMessage() error {
 	chunks := RenderMarkdown(r.activityText)
 	if len(chunks) == 0 {
 		return nil
 	}
-
-	_, err := r.bot.EditMessageText(context.TODO(), &telego.EditMessageTextParams{
+	_, err := r.bot.EditMessageText(r.ctx, &telego.EditMessageTextParams{
 		ChatID:    tu.ID(r.chatID),
 		MessageID: r.activityMsgID,
 		Text:      chunks[0].Text,
 		ParseMode: telego.ModeMarkdownV2,
 	})
-	if err != nil {
-		return r.sendNewActivityMessage(line)
+	return err
+}
+
+func buildActivityLine(block domain.ActivityBlock) string {
+	switch block.Kind {
+	case domain.ActivityThink:
+		return buildThinkActivityLine(block)
+	case domain.ActivityExecute:
+		return formatActivityMessage(block)
+	default:
+		return formatActivityLine(block)
 	}
-	return nil
+}
+
+func buildThinkActivityLine(block domain.ActivityBlock) string {
+	text := truncateRunes(block.Text, maxThinkTextRunes)
+	if text == "" {
+		return "**" + block.Label + "**"
+	}
+	return "**" + block.Label + "**\n" + text
 }
 
 func (r *TelegramResponder) sendNewActivityMessage(text string) error {
@@ -193,17 +202,14 @@ func (r *TelegramResponder) sendNewActivityMessage(text string) error {
 	}
 	r.activityText = text
 
-	chunks := RenderMarkdown(text)
-	var params *telego.SendMessageParams
-	if len(chunks) > 0 {
-		params = tu.Message(tu.ID(r.chatID), chunks[0].Text).WithParseMode(telego.ModeMarkdownV2)
-	} else {
-		params = tu.Message(tu.ID(r.chatID), text)
+	msgText, useMarkdown := pickActivityMessageText(text)
+	params := tu.Message(tu.ID(r.chatID), msgText)
+	if useMarkdown {
+		params = params.WithParseMode(telego.ModeMarkdownV2)
 	}
-
-	sent, err := r.bot.SendMessage(context.TODO(), params)
-	if err != nil && len(chunks) > 0 {
-		sent, err = r.bot.SendMessage(context.TODO(), tu.Message(tu.ID(r.chatID), text))
+	sent, err := r.bot.SendMessage(r.ctx, params)
+	if err != nil && useMarkdown {
+		sent, err = r.bot.SendMessage(r.ctx, tu.Message(tu.ID(r.chatID), text))
 	}
 	if err != nil {
 		r.activityMsgID = 0
@@ -211,6 +217,14 @@ func (r *TelegramResponder) sendNewActivityMessage(text string) error {
 	}
 	r.activityMsgID = sent.MessageID
 	return nil
+}
+
+func pickActivityMessageText(text string) (string, bool) {
+	chunks := RenderMarkdown(text)
+	if len(chunks) == 0 {
+		return text, false
+	}
+	return chunks[0].Text, true
 }
 
 // ShowBusyNotification sends a "queued" notification with a "Send now" button.
@@ -222,7 +236,7 @@ func (r *TelegramResponder) ShowBusyNotification(token string, replyToMsgID int)
 	if replyToMsgID > 0 {
 		params.ReplyParameters = &telego.ReplyParameters{MessageID: replyToMsgID}
 	}
-	sent, err := r.bot.SendMessage(context.TODO(), params)
+	sent, err := r.bot.SendMessage(r.ctx, params)
 	if err != nil {
 		return 0, err
 	}
@@ -234,7 +248,7 @@ func (r *TelegramResponder) ClearBusyNotification(notifyMsgID int) error {
 	if notifyMsgID == 0 {
 		return nil
 	}
-	_, err := r.bot.EditMessageReplyMarkup(context.TODO(), &telego.EditMessageReplyMarkupParams{
+	_, err := r.bot.EditMessageReplyMarkup(r.ctx, &telego.EditMessageReplyMarkupParams{
 		ChatID:      tu.ID(r.chatID),
 		MessageID:   notifyMsgID,
 		ReplyMarkup: tu.InlineKeyboard(),
@@ -253,7 +267,7 @@ func (r *TelegramResponder) ShowResumeKeyboard(sessions []domain.SessionChoice) 
 			tu.InlineKeyboardButton(label).WithCallbackData(fmt.Sprintf("resume|%d", s.Index)),
 		))
 	}
-	_, err := r.bot.SendMessage(context.TODO(),
+	_, err := r.bot.SendMessage(r.ctx,
 		tu.Message(tu.ID(r.chatID), "Pick a session to resume:").WithReplyMarkup(tu.InlineKeyboard(rows...)))
 	return err
 }
@@ -268,6 +282,8 @@ func truncate(s string, maxLen int) string {
 // --- Activity formatting ---
 
 const maxThinkTextRunes = 100
+
+func runeCount(s string) int { return len([]rune(s)) }
 
 func truncateRunes(s string, maxRunes int) string {
 	runes := []rune(s)
@@ -287,7 +303,7 @@ func formatActivityLine(block domain.ActivityBlock) string {
 	return strings.Join(parts, " ")
 }
 
-var searchLocalWordBoundary = regexp.MustCompile(
+var localWorkspaceWordPattern = regexp.MustCompile(
 	`\b(workspace|repository|repo|project|ripgrep|rg|grep|glob)\b`,
 )
 
@@ -300,20 +316,18 @@ func searchSourceLabel(title, text string) string {
 			return "🌐 Searching web"
 		}
 	}
-	if strings.Contains(content, "file://") || searchLocalWordBoundary.MatchString(content) {
+	if strings.Contains(content, "file://") || localWorkspaceWordPattern.MatchString(content) {
 		return "🔎 Querying project"
 	}
 	return ""
 }
 
 func maxBacktickRun(s string) int {
-	maxRun, run := 0, 0
+	var maxRun, run int
 	for _, ch := range s {
 		if ch == '`' {
 			run++
-			if run > maxRun {
-				maxRun = run
-			}
+			maxRun = max(maxRun, run)
 		} else {
 			run = 0
 		}
@@ -331,12 +345,12 @@ func formatRunCommands(detail string) ([]string, bool) {
 		return nil, false
 	}
 	cmd := strings.TrimPrefix(detail, "Run ")
-	parts := strings.Split(cmd, ", Run ")
+	rawCommands := strings.Split(cmd, ", Run ")
 	var result []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, fencedCode(p))
+	for _, c := range rawCommands {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			result = append(result, fencedCode(c))
 		}
 	}
 	return result, true
@@ -355,6 +369,12 @@ func formatActivityPath(raw, workspace string) string {
 	return raw
 }
 
+var pathDetailPrefixes = map[domain.ActivityKind]string{
+	domain.ActivityRead:  "Read ",
+	domain.ActivityEdit:  "Edit ",
+	domain.ActivityWrite: "Write ",
+}
+
 func formatActivityDetail(block domain.ActivityBlock) ([]string, string) {
 	detail := block.Detail
 	switch block.Kind {
@@ -362,14 +382,14 @@ func formatActivityDetail(block domain.ActivityBlock) ([]string, string) {
 		if runParts, ok := formatRunCommands(detail); ok {
 			return runParts, ""
 		}
-	case domain.ActivityRead, domain.ActivityEdit:
-		prefix := "Read "
-		if block.Kind == domain.ActivityEdit {
-			prefix = "Edit "
-		}
-		if strings.HasPrefix(detail, prefix) {
+	case domain.ActivityRead, domain.ActivityEdit, domain.ActivityWrite:
+		if prefix := pathDetailPrefixes[block.Kind]; strings.HasPrefix(detail, prefix) {
 			path := formatActivityPath(strings.TrimPrefix(detail, prefix), block.Workspace)
 			return []string{"`" + path + "`"}, ""
+		}
+	case domain.ActivitySearch:
+		if detail != "" && detail != block.Label {
+			return []string{"`" + truncateRunes(detail, 60) + "`"}, ""
 		}
 	}
 	return nil, detail
@@ -378,8 +398,8 @@ func formatActivityDetail(block domain.ActivityBlock) ([]string, string) {
 func formatActivityMessage(block domain.ActivityBlock) string {
 	label := block.Label
 	if block.Kind == domain.ActivitySearch {
-		if sl := searchSourceLabel(block.Detail, block.Text); sl != "" {
-			label = sl
+		if alt := searchSourceLabel(block.Detail, block.Text); alt != "" {
+			label = alt
 		}
 	}
 	parts := []string{"**" + label + "**"}
