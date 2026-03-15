@@ -27,6 +27,7 @@ type liveSession struct {
 	permMode            domain.PermissionMode
 	supportsLoadSession bool
 	supportsSessionList bool
+	models              *acpsdk.SessionModelState
 }
 
 // defaultAgentEnvAllowlist is the set of env var names passed to agent subprocesses

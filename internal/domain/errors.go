@@ -9,4 +9,6 @@ var (
 	ErrLoadSessionNotSupported   = errors.New("agent does not support load_session")
 	ErrSessionNotFound           = errors.New("session not found")
 	ErrAgentCommandNotConfigured = errors.New("agent command not configured")
+	ErrModelsNotSupported        = errors.New("agent does not support model switching")
+	ErrModelNotFound             = errors.New("model not found in available models")
 )

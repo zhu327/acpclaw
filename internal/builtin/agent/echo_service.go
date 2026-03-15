@@ -15,6 +15,7 @@ var (
 	_ domain.Prompter          = (*EchoAgentService)(nil)
 	_ domain.PermissionHandler = (*EchoAgentService)(nil)
 	_ domain.ActivityObserver  = (*EchoAgentService)(nil)
+	_ domain.ModelManager      = (*EchoAgentService)(nil)
 )
 
 // EchoAgentService is a minimal agent implementation for development and testing.
@@ -170,3 +171,13 @@ func (e *EchoAgentService) SetPermissionHandler(
 
 // SetSessionPermissionMode is a no-op.
 func (e *EchoAgentService) SetSessionPermissionMode(_ domain.ChatRef, _ domain.PermissionMode) {}
+
+// GetModelState returns ErrModelsNotSupported for the echo service.
+func (e *EchoAgentService) GetModelState(_ domain.ChatRef) (*domain.ModelState, error) {
+	return nil, domain.ErrModelsNotSupported
+}
+
+// SetSessionModel returns ErrModelsNotSupported for the echo service.
+func (e *EchoAgentService) SetSessionModel(_ context.Context, _ domain.ChatRef, _ string) error {
+	return domain.ErrModelsNotSupported
+}

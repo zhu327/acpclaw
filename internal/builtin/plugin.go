@@ -36,6 +36,7 @@ type BuiltinPlugin struct {
 	prompter    domain.Prompter
 	permHandler domain.PermissionHandler
 	actObserver domain.ActivityObserver
+	modelMgr    domain.ModelManager
 	tgChannel   *telegram.TelegramChannel
 	resumeStore commands.ResumeChoicesStore
 	executor    *promptExecutor
@@ -192,6 +193,7 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 		commands.NewCancelCommand(b.prompter),
 		commands.NewReconnectCommand(b.sessionMgr, defaultWs, beforeSwitch),
 		commands.NewStatusCommand(b.sessionMgr),
+		commands.NewModelCommand(b.modelMgr),
 	}
 }
 
@@ -417,6 +419,7 @@ func (b *BuiltinPlugin) buildAgentService() {
 	b.prompter = svc
 	b.permHandler = svc
 	b.actObserver = svc
+	b.modelMgr = svc
 	b.shutdownFn = svc.Shutdown
 }
 
@@ -436,6 +439,7 @@ func (b *BuiltinPlugin) buildAgentServiceConfig(exe string) agent.ServiceConfig 
 		ConnectTimeout: time.Duration(b.cfg.Agent.ConnectTimeout) * time.Second,
 		PermissionMode: domain.PermissionMode(b.cfg.Permissions.Mode),
 		EventOutput:    b.cfg.Permissions.EventOutput,
+		DefaultModel:   b.cfg.Agent.Model,
 		MCPServers: []acpsdk.McpServer{
 			{
 				Stdio: &acpsdk.McpServerStdio{
@@ -454,6 +458,7 @@ type agentBundle interface {
 	domain.Prompter
 	domain.PermissionHandler
 	domain.ActivityObserver
+	domain.ModelManager
 }
 
 func (b *BuiltinPlugin) createAgentService(svcCfg agent.ServiceConfig) agentBundle {

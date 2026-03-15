@@ -44,6 +44,7 @@ type AgentConfig struct {
 	Command        string `yaml:"command"`
 	Workspace      string `yaml:"workspace"`
 	ConnectTimeout int    `yaml:"connect_timeout"`
+	Model          string `yaml:"model"`
 }
 
 // PermissionsConfig holds permission-related configuration.

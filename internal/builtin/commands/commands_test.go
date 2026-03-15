@@ -63,6 +63,22 @@ func (m *mockPrompter) Cancel(ctx context.Context, chat domain.ChatRef) error {
 	return m.cancelErr
 }
 
+type mockModelManager struct {
+	getModelStateOut *domain.ModelState
+	getModelStateErr error
+	setModelErr      error
+	setModelCalled   string
+}
+
+func (m *mockModelManager) GetModelState(_ domain.ChatRef) (*domain.ModelState, error) {
+	return m.getModelStateOut, m.getModelStateErr
+}
+
+func (m *mockModelManager) SetSessionModel(_ context.Context, _ domain.ChatRef, modelID string) error {
+	m.setModelCalled = modelID
+	return m.setModelErr
+}
+
 // --- Tests ---
 
 func TestNewCommand_Success(t *testing.T) {
@@ -311,4 +327,123 @@ func TestReconnectCommand_Success(t *testing.T) {
 	assert.Contains(t, result.Text, "reconnected")
 	assert.Contains(t, result.Text, "sess-reconnect")
 	assert.Contains(t, result.Text, "/reconnected")
+}
+
+func TestModelCommand_ListModels(t *testing.T) {
+	mm := &mockModelManager{
+		getModelStateOut: &domain.ModelState{
+			CurrentModelID: "gpt-4",
+			Available: []domain.ModelInfo{
+				{ID: "gpt-4", Name: "GPT-4", Description: "Most capable"},
+				{ID: "gpt-3.5", Name: "GPT-3.5"},
+			},
+		},
+	}
+	cmd := NewModelCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Contains(t, result.Text, "Available Models")
+	assert.Contains(t, result.Text, "1. GPT-4")
+	assert.Contains(t, result.Text, "ID: `gpt-4`")
+	assert.Contains(t, result.Text, "Most capable")
+	assert.Contains(t, result.Text, "2. GPT-3.5")
+	assert.Contains(t, result.Text, "▶")
+	assert.Contains(t, result.Text, "/model <number>")
+}
+
+func TestModelCommand_ListModels_NoSession(t *testing.T) {
+	mm := &mockModelManager{getModelStateErr: domain.ErrNoActiveSession}
+	cmd := NewModelCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "No active session")
+}
+
+func TestModelCommand_ListModels_NotSupported(t *testing.T) {
+	mm := &mockModelManager{getModelStateErr: domain.ErrModelsNotSupported}
+	cmd := NewModelCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "does not support model switching")
+}
+
+func TestModelCommand_SwitchModel_Success(t *testing.T) {
+	mm := &mockModelManager{}
+	cmd := NewModelCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"gpt-4"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "Switched to model")
+	assert.Contains(t, result.Text, "gpt-4")
+	assert.Equal(t, "gpt-4", mm.setModelCalled)
+}
+
+func TestModelCommand_SwitchModel_NotFound(t *testing.T) {
+	mm := &mockModelManager{setModelErr: domain.ErrModelNotFound}
+	cmd := NewModelCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"nonexistent"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "not found")
+	assert.Contains(t, result.Text, "/model")
+}
+
+func TestModelCommand_SwitchModel_NoSession(t *testing.T) {
+	mm := &mockModelManager{setModelErr: domain.ErrNoActiveSession}
+	cmd := NewModelCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"gpt-4"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "No active session")
+}
+
+func TestModelCommand_SwitchModel_ByNumber(t *testing.T) {
+	mm := &mockModelManager{
+		getModelStateOut: &domain.ModelState{
+			CurrentModelID: "gpt-4",
+			Available: []domain.ModelInfo{
+				{ID: "gpt-4", Name: "GPT-4"},
+				{ID: "claude-sonnet", Name: "Sonnet"},
+			},
+		},
+	}
+	cmd := NewModelCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"2"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "Switched to model")
+	assert.Contains(t, result.Text, "claude-sonnet")
+	assert.Equal(t, "claude-sonnet", mm.setModelCalled)
 }

@@ -8,13 +8,21 @@ import (
 	"github.com/zhu327/acpclaw/internal/domain"
 )
 
-const (
-	helpHeader = `ACP-Claw Bot
+const helpHeader = `ACP-Claw Bot
 
 Session Management
 `
-	helpFallback = helpHeader + "/new [workspace]  — Start a new session\n/session  — List all sessions\n/resume [N]  — Resume a session\n\nControls\n/cancel  — Cancel current prompt\n/reconnect  — Reconnect ACP process\n\n/status  — Show status\n/help  — Show this help"
-)
+
+var helpFallback = helpHeader +
+	"/new [workspace]  — Start a new session\n" +
+	"/session  — List all sessions\n" +
+	"/resume [N]  — Resume a session\n" +
+	"\nControls\n" +
+	"/cancel  — Cancel current prompt\n" +
+	"/reconnect  — Reconnect ACP process\n" +
+	"/model [id|N]  — List or switch model\n" +
+	"\n/status  — Show status\n" +
+	"/help  — Show this help"
 
 // HelpCommand handles /help.
 type HelpCommand struct{}

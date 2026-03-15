@@ -44,6 +44,25 @@ type Prompter interface {
 	Cancel(ctx context.Context, chat ChatRef) error
 }
 
+// ModelInfo holds information about an available model.
+type ModelInfo struct {
+	ID          string
+	Name        string
+	Description string
+}
+
+// ModelState holds the current model state for a session.
+type ModelState struct {
+	CurrentModelID string
+	Available      []ModelInfo
+}
+
+// ModelManager handles model listing and switching.
+type ModelManager interface {
+	GetModelState(chat ChatRef) (*ModelState, error)
+	SetSessionModel(ctx context.Context, chat ChatRef, modelID string) error
+}
+
 // PermissionHandler manages permission request wiring.
 type PermissionHandler interface {
 	SetPermissionHandler(fn func(chat ChatRef, req PermissionRequest) <-chan PermissionResponse)

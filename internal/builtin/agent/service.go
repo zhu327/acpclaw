@@ -21,6 +21,7 @@ type ServiceConfig struct {
 	PermissionMode domain.PermissionMode
 	EventOutput    string // "stdout" or "off"
 	MCPServers     []acpsdk.McpServer
+	DefaultModel   string // optional model ID to auto-select on new sessions
 	// AgentEnv is the explicit set of env var names to pass to agent subprocesses.
 	// When nil, a safe default allowlist is used (PATH, HOME, LANG, etc.).
 	// Set to an empty slice to pass no env vars at all.
@@ -32,6 +33,7 @@ var (
 	_ domain.Prompter          = (*AcpAgentService)(nil)
 	_ domain.PermissionHandler = (*AcpAgentService)(nil)
 	_ domain.ActivityObserver  = (*AcpAgentService)(nil)
+	_ domain.ModelManager      = (*AcpAgentService)(nil)
 )
 
 // AcpAgentService manages ACP agent subprocesses per chat. Each chat maintains a long-lived
@@ -180,7 +182,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chat domain.ChatRef, 
 		return err
 	}
 
-	_, err = live.conn.LoadSession(sessCtx, acpsdk.LoadSessionRequest{
+	loadResp, err := live.conn.LoadSession(sessCtx, acpsdk.LoadSessionRequest{
 		SessionId:  acpsdk.SessionId(sessionID),
 		Cwd:        targetWorkspace,
 		McpServers: s.cfg.MCPServers,
@@ -196,6 +198,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chat domain.ChatRef, 
 	s.mu.Lock()
 	live.sessionID = sessionID
 	live.workspace = targetWorkspace
+	live.models = loadResp.Models
 	s.sessionHistory[key] = upsertCappedSessionHistory(s.sessionHistory[key], domain.SessionInfo{
 		SessionID: sessionID,
 		Workspace: targetWorkspace,
@@ -411,6 +414,66 @@ func (s *AcpAgentService) Shutdown() {
 	for _, live := range sessions {
 		stopLiveSession(live)
 	}
+}
+
+// GetModelState returns the current model state for the chat's live session.
+func (s *AcpAgentService) GetModelState(chat domain.ChatRef) (*domain.ModelState, error) {
+	key := chat.CompositeKey()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	live := s.liveByChat[key]
+	if live == nil {
+		return nil, domain.ErrNoActiveSession
+	}
+	if live.models == nil {
+		return nil, domain.ErrModelsNotSupported
+	}
+	models := live.models
+	state := &domain.ModelState{CurrentModelID: string(models.CurrentModelId)}
+	for _, m := range models.AvailableModels {
+		info := domain.ModelInfo{
+			ID:   string(m.ModelId),
+			Name: m.Name,
+		}
+		if m.Description != nil {
+			info.Description = *m.Description
+		}
+		state.Available = append(state.Available, info)
+	}
+	return state, nil
+}
+
+// SetSessionModel switches the model for the chat's active session.
+func (s *AcpAgentService) SetSessionModel(ctx context.Context, chat domain.ChatRef, modelID string) error {
+	key := chat.CompositeKey()
+	s.mu.RLock()
+	live := s.liveByChat[key]
+	if live == nil {
+		s.mu.RUnlock()
+		return domain.ErrNoActiveSession
+	}
+	if live.models == nil {
+		s.mu.RUnlock()
+		return domain.ErrModelsNotSupported
+	}
+	if !modelInList(live.models.AvailableModels, modelID) {
+		s.mu.RUnlock()
+		return domain.ErrModelNotFound
+	}
+	sessionID := live.sessionID
+	s.mu.RUnlock()
+
+	_, err := live.conn.SetSessionModel(ctx, acpsdk.SetSessionModelRequest{
+		SessionId: acpsdk.SessionId(sessionID),
+		ModelId:   acpsdk.ModelId(modelID),
+	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	live.models.CurrentModelId = acpsdk.ModelId(modelID)
+	s.mu.Unlock()
+	return nil
 }
 
 // SetSessionPermissionMode updates the permission mode for the chat's live session.
