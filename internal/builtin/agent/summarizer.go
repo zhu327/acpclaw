@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/zhu327/acpclaw/internal/domain"
@@ -32,30 +34,48 @@ func (s *AgentSummarizer) Summarize(ctx context.Context, chat domain.ChatRef, tr
 	if reply == nil {
 		return "", nil
 	}
-	return reply.Text, nil
+	return cleanSummary(reply.Text), nil
+}
+
+var codeFenceRe = regexp.MustCompile("(?s)```(?:markdown|md)?\\s*\n(.*?)```")
+
+func cleanSummary(raw string) string {
+	if m := codeFenceRe.FindStringSubmatch(raw); len(m) > 1 {
+		raw = m[1]
+	}
+	if idx := strings.Index(raw, "---"); idx > 0 {
+		raw = raw[idx:]
+	}
+	return strings.TrimSpace(raw)
 }
 
 func buildSummarizePrompt(transcript string) string {
-	return fmt.Sprintf(`请将以下对话总结为结构化摘要，直接输出 Markdown 格式如下:
+	return fmt.Sprintf(`You are a conversation summarizer. Your ONLY job is to output a structured Markdown summary. Follow these rules strictly:
+
+1. Output ONLY the Markdown content below — no thinking, no explanation, no preamble, no code fences.
+2. Start your response with the "---" front matter line. Nothing before it.
+3. Keep the summary concise and factual. Use the same language as the conversation.
+4. If a section has no relevant content, write "- N/A".
+
 ---
-title: "<简洁标题>"
+title: "<concise title, 10 words or fewer>"
 date: %s
-tags: [<相关标签>]
 ---
 
 ## Summary
-<2-4 句话概述>
+<2-4 sentence overview of the conversation's main content and purpose>
 
 ## Key Topics
-- <主题 1>
-- <主题 2>
+- <topic 1>
+- <topic 2>
 
 ## Decisions & Outcomes
-- <决定或结果>
+- <decisions made or results produced>
 
 ## Notable Information
-- <值得记住的信息>
+- <key information worth remembering, e.g. configs, IDs, names>
 
-对话内容:
-%s`, time.Now().Format(summarizeDateFormat), transcript)
+<conversation>
+%s
+</conversation>`, time.Now().Format(summarizeDateFormat), transcript)
 }
