@@ -79,6 +79,22 @@ func (m *mockModelManager) SetSessionModel(_ context.Context, _ domain.ChatRef, 
 	return m.setModelErr
 }
 
+type mockModeManager struct {
+	getModeStateOut *domain.ModeState
+	getModeStateErr error
+	setModeErr      error
+	setModeCalled   string
+}
+
+func (m *mockModeManager) GetModeState(_ domain.ChatRef) (*domain.ModeState, error) {
+	return m.getModeStateOut, m.getModeStateErr
+}
+
+func (m *mockModeManager) SetSessionMode(_ context.Context, _ domain.ChatRef, modeID string) error {
+	m.setModeCalled = modeID
+	return m.setModeErr
+}
+
 // --- Tests ---
 
 func TestNewCommand_Success(t *testing.T) {
@@ -202,7 +218,6 @@ func TestStartCommand(t *testing.T) {
 }
 
 func TestHelpCommand_WithCommands(t *testing.T) {
-	cmd := NewHelpCommand()
 	helpCmd := NewHelpCommand()
 	startCmd := NewStartCommand()
 	tc := &domain.TurnContext{
@@ -215,7 +230,7 @@ func TestHelpCommand_WithCommands(t *testing.T) {
 		},
 	}
 
-	result, err := cmd.Execute(context.Background(), nil, tc)
+	result, err := helpCmd.Execute(context.Background(), nil, tc)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Contains(t, result.Text, "ACP-Claw Bot")
@@ -446,4 +461,123 @@ func TestModelCommand_SwitchModel_ByNumber(t *testing.T) {
 	assert.Contains(t, result.Text, "Switched to model")
 	assert.Contains(t, result.Text, "claude-sonnet")
 	assert.Equal(t, "claude-sonnet", mm.setModelCalled)
+}
+
+func TestModeCommand_ListModes(t *testing.T) {
+	mm := &mockModeManager{
+		getModeStateOut: &domain.ModeState{
+			CurrentModeID: "agent",
+			Available: []domain.ModeInfo{
+				{ID: "agent", Name: "Agent", Description: "Full autonomous agent"},
+				{ID: "ask", Name: "Ask", Description: "Read-only mode"},
+			},
+		},
+	}
+	cmd := NewModeCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Contains(t, result.Text, "Available Modes")
+	assert.Contains(t, result.Text, "1. Agent")
+	assert.Contains(t, result.Text, "ID: `agent`")
+	assert.Contains(t, result.Text, "Full autonomous agent")
+	assert.Contains(t, result.Text, "2. Ask")
+	assert.Contains(t, result.Text, "▶")
+	assert.Contains(t, result.Text, "/mode <number>")
+}
+
+func TestModeCommand_ListModes_NoSession(t *testing.T) {
+	mm := &mockModeManager{getModeStateErr: domain.ErrNoActiveSession}
+	cmd := NewModeCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "No active session")
+}
+
+func TestModeCommand_ListModes_NotSupported(t *testing.T) {
+	mm := &mockModeManager{getModeStateErr: domain.ErrModesNotSupported}
+	cmd := NewModeCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), nil, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "does not support mode switching")
+}
+
+func TestModeCommand_SwitchMode_Success(t *testing.T) {
+	mm := &mockModeManager{}
+	cmd := NewModeCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"ask"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "Switched to mode")
+	assert.Contains(t, result.Text, "ask")
+	assert.Equal(t, "ask", mm.setModeCalled)
+}
+
+func TestModeCommand_SwitchMode_NotFound(t *testing.T) {
+	mm := &mockModeManager{setModeErr: domain.ErrModeNotFound}
+	cmd := NewModeCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"nonexistent"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "not found")
+	assert.Contains(t, result.Text, "/mode")
+}
+
+func TestModeCommand_SwitchMode_NoSession(t *testing.T) {
+	mm := &mockModeManager{setModeErr: domain.ErrNoActiveSession}
+	cmd := NewModeCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"ask"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "No active session")
+}
+
+func TestModeCommand_SwitchMode_ByNumber(t *testing.T) {
+	mm := &mockModeManager{
+		getModeStateOut: &domain.ModeState{
+			CurrentModeID: "agent",
+			Available: []domain.ModeInfo{
+				{ID: "agent", Name: "Agent"},
+				{ID: "ask", Name: "Ask"},
+			},
+		},
+	}
+	cmd := NewModeCommand(mm)
+	tc := &domain.TurnContext{
+		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
+		State: domain.State{},
+	}
+
+	result, err := cmd.Execute(context.Background(), []string{"2"}, tc)
+	require.NoError(t, err)
+	assert.Contains(t, result.Text, "Switched to mode")
+	assert.Contains(t, result.Text, "ask")
+	assert.Equal(t, "ask", mm.setModeCalled)
 }

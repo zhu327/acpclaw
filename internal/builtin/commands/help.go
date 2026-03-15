@@ -21,6 +21,7 @@ var helpFallback = helpHeader +
 	"/cancel  — Cancel current prompt\n" +
 	"/reconnect  — Reconnect ACP process\n" +
 	"/model [id|N]  — List or switch model\n" +
+	"/mode [id|N]  — List or switch mode\n" +
 	"\n/status  — Show status\n" +
 	"/help  — Show this help"
 

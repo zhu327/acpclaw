@@ -37,6 +37,7 @@ type BuiltinPlugin struct {
 	permHandler domain.PermissionHandler
 	actObserver domain.ActivityObserver
 	modelMgr    domain.ModelManager
+	modeMgr     domain.ModeManager
 	tgChannel   *telegram.TelegramChannel
 	resumeStore commands.ResumeChoicesStore
 	executor    *promptExecutor
@@ -194,6 +195,7 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 		commands.NewReconnectCommand(b.sessionMgr, defaultWs, beforeSwitch),
 		commands.NewStatusCommand(b.sessionMgr),
 		commands.NewModelCommand(b.modelMgr),
+		commands.NewModeCommand(b.modeMgr),
 	}
 }
 
@@ -420,6 +422,7 @@ func (b *BuiltinPlugin) buildAgentService() {
 	b.permHandler = svc
 	b.actObserver = svc
 	b.modelMgr = svc
+	b.modeMgr = svc
 	b.shutdownFn = svc.Shutdown
 }
 
@@ -459,6 +462,7 @@ type agentBundle interface {
 	domain.PermissionHandler
 	domain.ActivityObserver
 	domain.ModelManager
+	domain.ModeManager
 }
 
 func (b *BuiltinPlugin) createAgentService(svcCfg agent.ServiceConfig) agentBundle {

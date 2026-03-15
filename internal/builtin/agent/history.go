@@ -80,6 +80,7 @@ func (s *AcpAgentService) createNewSession(
 	live.sessionID = string(newSess.SessionId)
 	live.workspace = targetWorkspace
 	live.models = newSess.Models
+	live.modes = newSess.Modes
 	s.sessionHistory[chatID] = upsertCappedSessionHistory(s.sessionHistory[chatID], domain.SessionInfo{
 		SessionID: live.sessionID,
 		Workspace: targetWorkspace,
@@ -94,14 +95,21 @@ func (s *AcpAgentService) createNewSession(
 
 const autoSwitchModelTimeout = 10 * time.Second
 
-// modelInList returns true if id is in the available models list.
-func modelInList(available []acpsdk.ModelInfo, id string) bool {
-	for _, m := range available {
-		if string(m.ModelId) == id {
+func idInSlice[T any](slice []T, id string, getID func(T) string) bool {
+	for _, x := range slice {
+		if getID(x) == id {
 			return true
 		}
 	}
 	return false
+}
+
+func modelInList(available []acpsdk.ModelInfo, id string) bool {
+	return idInSlice(available, id, func(m acpsdk.ModelInfo) string { return string(m.ModelId) })
+}
+
+func modeInList(available []acpsdk.SessionMode, id string) bool {
+	return idInSlice(available, id, func(m acpsdk.SessionMode) string { return string(m.Id) })
 }
 
 // autoSwitchModel switches to the configured default model if the agent supports

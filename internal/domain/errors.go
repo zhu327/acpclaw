@@ -11,4 +11,6 @@ var (
 	ErrAgentCommandNotConfigured = errors.New("agent command not configured")
 	ErrModelsNotSupported        = errors.New("agent does not support model switching")
 	ErrModelNotFound             = errors.New("model not found in available models")
+	ErrModesNotSupported         = errors.New("agent does not support mode switching")
+	ErrModeNotFound              = errors.New("mode not found in available modes")
 )

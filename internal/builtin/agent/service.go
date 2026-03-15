@@ -34,6 +34,7 @@ var (
 	_ domain.PermissionHandler = (*AcpAgentService)(nil)
 	_ domain.ActivityObserver  = (*AcpAgentService)(nil)
 	_ domain.ModelManager      = (*AcpAgentService)(nil)
+	_ domain.ModeManager       = (*AcpAgentService)(nil)
 )
 
 // AcpAgentService manages ACP agent subprocesses per chat. Each chat maintains a long-lived
@@ -199,6 +200,7 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chat domain.ChatRef, 
 	live.sessionID = sessionID
 	live.workspace = targetWorkspace
 	live.models = loadResp.Models
+	live.modes = loadResp.Modes
 	s.sessionHistory[key] = upsertCappedSessionHistory(s.sessionHistory[key], domain.SessionInfo{
 		SessionID: sessionID,
 		Workspace: targetWorkspace,
@@ -484,4 +486,64 @@ func (s *AcpAgentService) SetSessionPermissionMode(chat domain.ChatRef, mode dom
 	if live := s.liveByChat[key]; live != nil {
 		live.permMode = mode
 	}
+}
+
+// GetModeState returns the current mode state for the chat's live session.
+func (s *AcpAgentService) GetModeState(chat domain.ChatRef) (*domain.ModeState, error) {
+	key := chat.CompositeKey()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	live := s.liveByChat[key]
+	if live == nil {
+		return nil, domain.ErrNoActiveSession
+	}
+	if live.modes == nil {
+		return nil, domain.ErrModesNotSupported
+	}
+	modes := live.modes
+	state := &domain.ModeState{CurrentModeID: string(modes.CurrentModeId)}
+	for _, m := range modes.AvailableModes {
+		info := domain.ModeInfo{
+			ID:   string(m.Id),
+			Name: m.Name,
+		}
+		if m.Description != nil {
+			info.Description = *m.Description
+		}
+		state.Available = append(state.Available, info)
+	}
+	return state, nil
+}
+
+// SetSessionMode switches the mode for the chat's active session.
+func (s *AcpAgentService) SetSessionMode(ctx context.Context, chat domain.ChatRef, modeID string) error {
+	key := chat.CompositeKey()
+	s.mu.RLock()
+	live := s.liveByChat[key]
+	if live == nil {
+		s.mu.RUnlock()
+		return domain.ErrNoActiveSession
+	}
+	if live.modes == nil {
+		s.mu.RUnlock()
+		return domain.ErrModesNotSupported
+	}
+	if !modeInList(live.modes.AvailableModes, modeID) {
+		s.mu.RUnlock()
+		return domain.ErrModeNotFound
+	}
+	sessionID := live.sessionID
+	s.mu.RUnlock()
+
+	_, err := live.conn.SetSessionMode(ctx, acpsdk.SetSessionModeRequest{
+		SessionId: acpsdk.SessionId(sessionID),
+		ModeId:    acpsdk.SessionModeId(modeID),
+	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	live.modes.CurrentModeId = acpsdk.SessionModeId(modeID)
+	s.mu.Unlock()
+	return nil
 }

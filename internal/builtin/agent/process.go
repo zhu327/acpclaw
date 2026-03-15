@@ -28,6 +28,7 @@ type liveSession struct {
 	supportsLoadSession bool
 	supportsSessionList bool
 	models              *acpsdk.SessionModelState
+	modes               *acpsdk.SessionModeState
 }
 
 // defaultAgentEnvAllowlist is the set of env var names passed to agent subprocesses

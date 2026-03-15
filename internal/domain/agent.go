@@ -63,6 +63,25 @@ type ModelManager interface {
 	SetSessionModel(ctx context.Context, chat ChatRef, modelID string) error
 }
 
+// ModeInfo holds information about an available mode.
+type ModeInfo struct {
+	ID          string
+	Name        string
+	Description string
+}
+
+// ModeState holds the current mode state for a session.
+type ModeState struct {
+	CurrentModeID string
+	Available     []ModeInfo
+}
+
+// ModeManager handles mode listing and switching.
+type ModeManager interface {
+	GetModeState(chat ChatRef) (*ModeState, error)
+	SetSessionMode(ctx context.Context, chat ChatRef, modeID string) error
+}
+
 // PermissionHandler manages permission request wiring.
 type PermissionHandler interface {
 	SetPermissionHandler(fn func(chat ChatRef, req PermissionRequest) <-chan PermissionResponse)
