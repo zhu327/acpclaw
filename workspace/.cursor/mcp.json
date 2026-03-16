@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "acpclaw-tools": {
+      "command": "/usr/local/bin/acpclaw",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}

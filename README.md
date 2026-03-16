@@ -1,27 +1,27 @@
 # acpclaw
 
-Turn any [ACP (Agent Client Protocol)](https://agentclientprotocol.com/) compatible coding agent into your personal assistant — chat with AI agents like Claude Code through Telegram, anytime, anywhere. What was once locked inside your terminal becomes a always-on assistant with persistent memory and scheduled tasks.
+Turn any [ACP (Agent Client Protocol)](https://agentclientprotocol.com/) compatible coding agent into your personal assistant — chat with AI agents through messaging apps like Telegram, anytime, anywhere. What was once locked inside your terminal becomes an always-on assistant with persistent memory and scheduled tasks.
 
 ## Why acpclaw?
 
-Coding agents like Claude Code and Cursor are incredibly powerful, but they're trapped in terminals and IDEs. acpclaw sets them free:
+Coding agents like Claude Code and OpenCode are incredibly powerful, but they're trapped in terminals and IDEs. acpclaw sets them free:
 
 - **Always reachable** — Talk to your agent on the go via Telegram, no laptop required
 - **Persistent memory** — The agent remembers your preferences, project context, and contacts across sessions
-- **Scheduled tasks** — Let the agent run tasks on a schedule (monitoring, reminders, data collection)
+- **Multi-channel** — Connect via Telegram chat
 - **Multi-session** — Maintain sessions across multiple workspaces, switch anytime
 
 ## How It Works
 
 ```
-Telegram ↔ acpclaw ↔ ACP Agent (e.g. Claude Code)
-                         ↓
-              Built-in MCP Server
-              - Memory tools
-              - Cron tools
+Telegram ↔ acpclaw ↔ ACP Agent (e.g. opencode, cursor agent cli)
+                          ↓
+                Built-in MCP Server
+                - Memory tools
+                - Cron tools
 ```
 
-acpclaw sits between Telegram and the ACP agent subprocess. It manages the agent lifecycle via ACP, and exposes memory and cron tools to the agent via MCP — enabling the agent to autonomously read/write memories and create scheduled tasks.
+acpclaw sits between the messaging channel and the ACP agent subprocess. It manages the agent lifecycle via ACP, and exposes memory tools to the agent via MCP — enabling the agent to autonomously read/write memories across sessions.
 
 ## Quick Start
 
@@ -46,27 +46,24 @@ Create `config.yaml`:
 
 ```yaml
 telegram:
-  token: "YOUR_BOT_TOKEN"           # or set TELEGRAM_BOT_TOKEN env var
-  allowed_user_ids: []              # empty = allow all users
-  allowed_usernames: []             # optional: restrict by username
+  enabled: true                     # set true to enable Telegram channel
+  token: "YOUR_BOT_TOKEN"           # Telegram bot token
+  allowed_user_ids: []              # restrict by user ID (empty = allow all)
   proxy: ""                         # optional: socks5://host:port or http://host:port
 
 agent:
-  command: "claude"                 # any ACP-compatible agent (claude, aider, etc.)
-  workspace: "."                    # default working directory
+  command: "opencode acp"           # any ACP-compatible agent command
+  workspace: "./workspace"          # default working directory for the agent
   connect_timeout: 30               # agent handshake timeout in seconds
+  model: "your-model-id"            # model to use (passed to the agent)
 
 permissions:
-  mode: "ask"                       # ask | approve | deny
-  event_output: ""                  # stdout | off
+  mode: "approve"                   # ask | approve | deny
+  event_output: "stdout"            # stdout | off
 
 memory:
   enabled: true                     # enable persistent memory
-  auto_summarize: true              # auto-summarize sessions into episodes
   first_prompt_context: true        # inject memory context into first prompt
-
-cron:
-  enabled: true                     # enable scheduled tasks
 
 logging:
   level: "info"                     # debug | info | warn | error
@@ -79,32 +76,17 @@ logging:
 ./acpclaw -config config.yaml
 ```
 
-Or use environment variables (suitable for containerized deployments):
-
-```bash
-export TELEGRAM_BOT_TOKEN="your-token"
-export ACP_AGENT_COMMAND="claude"
-./acpclaw
-```
-
 Test without a real agent:
 
 ```bash
 ./acpclaw -echo
 ```
 
-## Telegram Commands
+## Channels
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Welcome message |
-| `/help` | Show all commands |
-| `/new [workspace]` | Start a new session (optionally specify working directory) |
-| `/session` | List all sessions |
-| `/resume [N]` | Resume session N |
-| `/cancel` | Cancel the current running task |
-| `/reconnect` | Reconnect the agent subprocess |
-| `/status` | Show current status |
+### Telegram
+
+Set `telegram.enabled: true` and provide a bot token. Optionally restrict access via `allowed_user_ids` and configure a proxy if needed.
 
 ## Memory System
 
@@ -120,44 +102,49 @@ When enabled, acpclaw maintains a persistent memory store in `~/.acpclaw/`, givi
 │   ├── projects.md          # Project notes and technical decisions
 │   └── notes.md             # General notes
 ├── episodes/                # Auto-summarized session transcripts
-├── history/                 # Chat history (SQLite)
-└── cron/                    # Scheduled tasks (SQLite)
+└── history/                 # Chat history (SQLite)
 ```
 
 - Memory is indexed in SQLite for full-text search
-- Sessions are auto-summarized and stored as episodes
 - Memory context is optionally injected into the first prompt so the agent knows you from the start
 - The agent reads, searches, and writes memory autonomously via MCP tools
 
-## Scheduled Tasks
+## Agent Workspace
 
-The agent can create and manage scheduled tasks via MCP tools:
+The `agent.workspace` config sets the default working directory the agent operates in. You can point this to any directory — the agent will use it as its root for reading files, running commands, and accessing project context.
 
-| MCP Tool | Description |
-|----------|-------------|
-| `cron_create` | Schedule a task with a cron expression |
-| `cron_list` | List all tasks |
-| `cron_run` | Trigger a task immediately |
-| `cron_delete` | Delete a task |
+### Example Workspace
 
-Example: `0 9 * * 1-5` — every weekday at 9 AM
+This repo ships a ready-to-use example workspace at `./workspace/`. It is pre-configured with:
 
-## Environment Variables
+- **`.cursor/mcp.json`** — Registers `acpclaw mcp` as an MCP server so the agent has access to memory tools out of the box
+- **`.agents/skills/`** — A collection of agent skills the agent can draw on:
+  - `weather/` — Get current weather and forecasts via wttr.in (no API key needed)
+  - `summarize/` — Summarize URLs, YouTube videos, and local files via the `summarize` CLI
+  - `automation-workflows/` — Design and implement automation workflows
+  - `skill-creator/` — Create, evaluate, and iteratively improve new agent skills
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token (required) |
-| `ACP_AGENT_COMMAND` | Agent command to spawn (required) |
-| `ACP_AGENT_WORKSPACE` | Default workspace (default: `.`) |
-| `ACP_CONNECT_TIMEOUT` | Handshake timeout in seconds (default: 30) |
-| `ACP_PERMISSION_MODE` | ask / approve / deny (default: ask) |
-| `ACP_PERMISSION_EVENT_OUTPUT` | stdout / off |
-| `ACP_LOG_LEVEL` | debug / info / warn / error (default: info) |
-| `ACP_LOG_FORMAT` | text / json (default: text) |
-| `ACPCLAW_MEMORY_ENABLED` | true / false (default: false) |
-| `ACPCLAW_FIRST_PROMPT_CONTEXT` | true / false (default: false) |
-| `ACPCLAW_CRON_ENABLED` | true / false (default: false) |
-| `TELEGRAM_PROXY` | Proxy URL for Telegram API |
+You can use this workspace as-is as your assistant's working directory, or use it as a starting point and add your own skills and configuration:
+
+```yaml
+agent:
+  workspace: "./workspace"
+```
+
+The MCP configuration in `workspace/.cursor/mcp.json` automatically connects the agent to acpclaw's built-in memory server:
+
+```json
+{
+  "mcpServers": {
+    "acpclaw-memory": {
+      "command": "/usr/local/bin/acpclaw",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Make sure the `acpclaw` binary is installed at the path specified (or adjust the path to match your installation).
 
 ## Project Structure
 
@@ -172,11 +159,11 @@ acpclaw/
 │   │   ├── channel/telegram/    # Telegram channel adapter
 │   │   ├── commands/            # Slash commands (/new, /resume, etc.)
 │   │   ├── memory/              # Memory service (knowledge base, history)
-│   │   ├── cron/                # Cron scheduler
 │   │   └── mcp/                 # MCP tool implementations
 │   ├── acpclient/               # ACP protocol client wrapper
 │   ├── config/                  # Configuration loading
 │   └── templates/               # Built-in memory templates
+├── workspace/                   # Example agent workspace (see above)
 ├── Makefile
 └── go.mod
 ```
