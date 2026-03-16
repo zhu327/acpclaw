@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ type MemoryConfig struct {
 
 // TelegramConfig holds Telegram bot configuration.
 type TelegramConfig struct {
+	Enabled          bool     `yaml:"enabled"`
 	Token            string   `yaml:"token"`
 	AllowedUserIDs   []int64  `yaml:"allowed_user_ids"`
 	AllowedUsernames []string `yaml:"allowed_usernames"`
@@ -79,8 +81,15 @@ func Load(path string) (*Config, error) {
 
 // Validate checks required fields and valid enum values.
 func (c *Config) Validate() error {
-	if strings.TrimSpace(c.Telegram.Token) == "" {
-		return fmt.Errorf("telegram token is required (TELEGRAM_BOT_TOKEN)")
+	if c.Telegram.Enabled && strings.TrimSpace(c.Telegram.Token) == "" {
+		return fmt.Errorf("telegram is enabled but token is missing (TELEGRAM_BOT_TOKEN)")
+	}
+	// Warn when token is present but the channel is not enabled.
+	if !c.Telegram.Enabled && strings.TrimSpace(c.Telegram.Token) != "" {
+		slog.Warn("telegram token is set but channel is not enabled; set TELEGRAM_ENABLED=true to activate")
+	}
+	if !c.Telegram.Enabled {
+		return fmt.Errorf("telegram channel must be configured (TELEGRAM_ENABLED + TELEGRAM_BOT_TOKEN)")
 	}
 	if strings.TrimSpace(c.Agent.Command) == "" {
 		return fmt.Errorf("agent command is required (ACP_AGENT_COMMAND)")
@@ -124,50 +133,55 @@ func defaults() *Config {
 	}
 }
 
+func getEnv(key string) string { return os.Getenv(key) }
+
 func applyEnv(cfg *Config) error {
-	if v := os.Getenv("TELEGRAM_BOT_TOKEN"); v != "" {
+	if v := getEnv("TELEGRAM_ENABLED"); v != "" {
+		cfg.Telegram.Enabled = parseBoolEnv(v)
+	}
+	if v := getEnv("TELEGRAM_BOT_TOKEN"); v != "" {
 		cfg.Telegram.Token = v
 	}
-	if v := os.Getenv("TELEGRAM_ALLOWED_USER_IDS"); v != "" {
+	if v := getEnv("TELEGRAM_ALLOWED_USER_IDS"); v != "" {
 		ids, err := parseInt64List(v)
 		if err != nil {
 			return fmt.Errorf("parsing TELEGRAM_ALLOWED_USER_IDS: %w", err)
 		}
 		cfg.Telegram.AllowedUserIDs = ids
 	}
-	if v := os.Getenv("TELEGRAM_ALLOWED_USERNAMES"); v != "" {
+	if v := getEnv("TELEGRAM_ALLOWED_USERNAMES"); v != "" {
 		cfg.Telegram.AllowedUsernames = parseStringList(v)
 	}
-	if v := os.Getenv("TELEGRAM_PROXY"); v != "" {
+	if v := getEnv("TELEGRAM_PROXY"); v != "" {
 		cfg.Telegram.Proxy = v
 	}
-	if v := os.Getenv("ACP_AGENT_COMMAND"); v != "" {
+	if v := getEnv("ACP_AGENT_COMMAND"); v != "" {
 		cfg.Agent.Command = v
 	}
-	if v := os.Getenv("ACP_CONNECT_TIMEOUT"); v != "" {
+	if v := getEnv("ACP_CONNECT_TIMEOUT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Agent.ConnectTimeout = n
 		}
 	}
-	if v := os.Getenv("ACP_PERMISSION_MODE"); v != "" {
+	if v := getEnv("ACP_PERMISSION_MODE"); v != "" {
 		cfg.Permissions.Mode = v
 	}
-	if v := os.Getenv("ACP_PERMISSION_EVENT_OUTPUT"); v != "" {
+	if v := getEnv("ACP_PERMISSION_EVENT_OUTPUT"); v != "" {
 		cfg.Permissions.EventOutput = v
 	}
-	if v := os.Getenv("ACP_LOG_LEVEL"); v != "" {
+	if v := getEnv("ACP_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
-	if v := os.Getenv("ACP_LOG_FORMAT"); v != "" {
+	if v := getEnv("ACP_LOG_FORMAT"); v != "" {
 		cfg.Logging.Format = v
 	}
-	if v := os.Getenv("ACPCLAW_MEMORY_ENABLED"); v != "" {
+	if v := getEnv("ACPCLAW_MEMORY_ENABLED"); v != "" {
 		cfg.Memory.Enabled = parseBoolEnv(v)
 	}
-	if v := os.Getenv("ACPCLAW_FIRST_PROMPT_CONTEXT"); v != "" {
+	if v := getEnv("ACPCLAW_FIRST_PROMPT_CONTEXT"); v != "" {
 		cfg.Memory.FirstPromptContext = parseBoolEnv(v)
 	}
-	if v := os.Getenv("ACPCLAW_CRON_ENABLED"); v != "" {
+	if v := getEnv("ACPCLAW_CRON_ENABLED"); v != "" {
 		cfg.Cron.Enabled = parseBoolEnv(v)
 	}
 	return nil

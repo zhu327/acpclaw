@@ -89,7 +89,11 @@ func (f *Framework) Start(ctx context.Context) error {
 }
 
 // ProcessInbound executes the 7-step turn lifecycle pipeline.
-func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessage, resp domain.Responder) (retErr error) {
+func (f *Framework) ProcessInbound(
+	ctx context.Context,
+	msg domain.InboundMessage,
+	resp domain.Responder,
+) (retErr error) {
 	key := msg.CompositeKey()
 	f.responders.Store(key, resp)
 	defer f.responders.Delete(key)
@@ -166,7 +170,11 @@ func (f *Framework) ProcessInbound(ctx context.Context, msg domain.InboundMessag
 	return nil
 }
 
-func (f *Framework) executeAction(ctx context.Context, action domain.Action, tc *domain.TurnContext) (*domain.Result, error) {
+func (f *Framework) executeAction(
+	ctx context.Context,
+	action domain.Action,
+	tc *domain.TurnContext,
+) (*domain.Result, error) {
 	if action.Kind == domain.ActionCommand {
 		cmd, ok := f.commands[action.Command]
 		if !ok {
@@ -200,7 +208,12 @@ func defaultAction(msg domain.InboundMessage, actionResult any) domain.Action {
 	}
 }
 
-func (f *Framework) renderAndDispatch(ctx context.Context, result *domain.Result, state domain.State, resp domain.Responder) {
+func (f *Framework) renderAndDispatch(
+	ctx context.Context,
+	result *domain.Result,
+	state domain.State,
+	resp domain.Responder,
+) {
 	var outbounds []domain.OutboundMessage
 	CallAll[domain.OutboundRenderer](f.registry, func(h domain.OutboundRenderer) error {
 		msgs, err := h.RenderOutbound(ctx, result, state)
@@ -267,7 +280,11 @@ func (f *Framework) HandleBusySendNow(chat domain.ChatRef, token string) (bool, 
 }
 
 // ResolveResumeChoice delegates to the ResumeHandler hook.
-func (f *Framework) ResolveResumeChoice(ctx context.Context, chat domain.ChatRef, sessionIndex int) (*domain.SessionInfo, error) {
+func (f *Framework) ResolveResumeChoice(
+	ctx context.Context,
+	chat domain.ChatRef,
+	sessionIndex int,
+) (*domain.SessionInfo, error) {
 	result, err := CallFirst[domain.ResumeHandler](f.registry, func(h domain.ResumeHandler) (any, error) {
 		return h.ResolveResumeChoice(ctx, chat, sessionIndex)
 	})

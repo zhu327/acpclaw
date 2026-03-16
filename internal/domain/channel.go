@@ -14,9 +14,10 @@ type InboundMessage struct {
 
 // OutboundMessage is the cross-channel unified outbound message format.
 type OutboundMessage struct {
-	Text   string
-	Images []ImageData
-	Files  []FileData
+	Text     string
+	Markdown bool // 内容是否为 Markdown 格式（由 channel 决定如何渲染）
+	Images   []ImageData
+	Files    []FileData
 }
 
 // SessionChoice is used by Responder.ShowResumeKeyboard.

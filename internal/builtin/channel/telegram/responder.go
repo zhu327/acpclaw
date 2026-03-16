@@ -94,7 +94,10 @@ func (r *TelegramResponder) ShowPermissionUI(req domain.ChannelPermissionRequest
 		if !ok {
 			continue
 		}
-		buttons = append(buttons, tu.InlineKeyboardButton(perm.label).WithCallbackData(fmt.Sprintf("perm|%s|%s", req.ID, perm.cb)))
+		buttons = append(
+			buttons,
+			tu.InlineKeyboardButton(perm.label).WithCallbackData(fmt.Sprintf("perm|%s|%s", req.ID, perm.cb)),
+		)
 	}
 	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(buttons...))
 
@@ -106,7 +109,13 @@ func (r *TelegramResponder) ShowPermissionUI(req domain.ChannelPermissionRequest
 }
 
 // sendWithMarkdownFallback sends a message using MarkdownV2, falling back to plain text on failure.
-func sendWithMarkdownFallback(ctx context.Context, bot *telego.Bot, chatID int64, text string, keyboard *telego.InlineKeyboardMarkup) error {
+func sendWithMarkdownFallback(
+	ctx context.Context,
+	bot *telego.Bot,
+	chatID int64,
+	text string,
+	keyboard *telego.InlineKeyboardMarkup,
+) error {
 	plainParams := tu.Message(tu.ID(chatID), text)
 	if keyboard != nil {
 		plainParams = plainParams.WithReplyMarkup(keyboard)
@@ -189,7 +198,7 @@ func buildActivityLine(block domain.ActivityBlock) string {
 }
 
 func buildThinkActivityLine(block domain.ActivityBlock) string {
-	text := truncateRunes(block.Text, maxThinkTextRunes)
+	text := domain.TruncateRunes(block.Text, domain.MaxThinkTextRunes)
 	if text == "" {
 		return "**" + block.Label + "**"
 	}
@@ -281,17 +290,7 @@ func truncate(s string, maxLen int) string {
 
 // --- Activity formatting ---
 
-const maxThinkTextRunes = 100
-
 func runeCount(s string) int { return len([]rune(s)) }
-
-func truncateRunes(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes]) + "..."
-}
 
 func formatActivityLine(block domain.ActivityBlock) string {
 	detailParts, detail := formatActivityDetail(block)
@@ -389,7 +388,7 @@ func formatActivityDetail(block domain.ActivityBlock) ([]string, string) {
 		}
 	case domain.ActivitySearch:
 		if detail != "" && detail != block.Label {
-			return []string{"`" + truncateRunes(detail, 60) + "`"}, ""
+			return []string{"`" + domain.TruncateRunes(detail, 60) + "`"}, ""
 		}
 	}
 	return nil, detail
@@ -413,7 +412,7 @@ func formatActivityMessage(block domain.ActivityBlock) string {
 
 	text := block.Text
 	if block.Kind == domain.ActivityThink && text != "" {
-		text = truncateRunes(text, maxThinkTextRunes)
+		text = domain.TruncateRunes(text, domain.MaxThinkTextRunes)
 	}
 	if text != "" && text != block.Detail && text != block.Label {
 		parts = append(parts, text)

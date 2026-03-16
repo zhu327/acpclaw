@@ -28,22 +28,42 @@ var knowledgeIDs = func() []string {
 }()
 
 func memoryReadTool() mcp.Tool {
-	return mcp.NewTool("memory_read",
-		mcp.WithDescription("Read the full content of a memory entry by id. Use memory_list to discover available ids."),
-		mcp.WithString("id", mcp.Required(), mcp.Description("Memory entry id, e.g. 'SOUL', 'owner-profile', 'preferences'")),
+	return mcp.NewTool(
+		"memory_read",
+		mcp.WithDescription(
+			"Read the full content of a memory entry by id. Use memory_list to discover available ids.",
+		),
+		mcp.WithString(
+			"id",
+			mcp.Required(),
+			mcp.Description("Memory entry id, e.g. 'SOUL', 'owner-profile', 'preferences'"),
+		),
 	)
 }
 
 func memorySearchTool() mcp.Tool {
-	return mcp.NewTool("memory_search",
-		mcp.WithDescription("Full-text search across all memories. Returns up to 5 matching entries with content snippets."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Search keywords or phrase, e.g. 'user name', 'project deadline'")),
-		mcp.WithString("category", mcp.Description("Optional filter: 'identity' (SOUL), 'episode' (conversations), or 'knowledge' (structured notes)")),
+	return mcp.NewTool(
+		"memory_search",
+		mcp.WithDescription(
+			"Full-text search across all memories. Returns up to 5 matching entries with content snippets.",
+		),
+		mcp.WithString(
+			"query",
+			mcp.Required(),
+			mcp.Description("Search keywords or phrase, e.g. 'user name', 'project deadline'"),
+		),
+		mcp.WithString(
+			"category",
+			mcp.Description(
+				"Optional filter: 'identity' (SOUL), 'episode' (conversations), or 'knowledge' (structured notes)",
+			),
+		),
 	)
 }
 
 func memorySaveTool() mcp.Tool {
-	return mcp.NewTool("memory_save",
+	return mcp.NewTool(
+		"memory_save",
 		mcp.WithDescription(
 			"Save or overwrite a memory entry. "+
 				"Use category='identity' to write the agent's personality (SOUL.md, id is ignored). "+
@@ -51,7 +71,10 @@ func memorySaveTool() mcp.Tool {
 		),
 		mcp.WithString("id", mcp.Description("Required for knowledge. One of: "+strings.Join(knowledgeIDs, ", "))),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Markdown content to save")),
-		mcp.WithString("category", mcp.Description("'identity' = agent personality (SOUL.md), 'knowledge' = structured notes (default)")),
+		mcp.WithString(
+			"category",
+			mcp.Description("'identity' = agent personality (SOUL.md), 'knowledge' = structured notes (default)"),
+		),
 	)
 }
 
@@ -131,7 +154,9 @@ func validateSaveParams(id, category string) *mcp.CallToolResult {
 		return mcp.NewToolResultError("id is required for knowledge")
 	}
 	if _, ok := knowledgeTopics[id]; !ok {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid id %q, must be one of: %s", id, strings.Join(knowledgeIDs, ", ")))
+		return mcp.NewToolResultError(
+			fmt.Sprintf("invalid id %q, must be one of: %s", id, strings.Join(knowledgeIDs, ", ")),
+		)
 	}
 	return nil
 }

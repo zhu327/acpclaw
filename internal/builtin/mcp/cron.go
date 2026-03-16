@@ -27,17 +27,34 @@ func parseChannelAndChatID(req mcp.CallToolRequest) (channel, chatID string, err
 }
 
 func cronCreateTool() mcp.Tool {
-	return mcp.NewTool("cron_create",
+	return mcp.NewTool(
+		"cron_create",
 		mcp.WithDescription(
 			"Create a scheduled task. When triggered, 'message' is sent as a prompt to the AI agent and the agent's reply is delivered to the user. "+
 				"Use channel and chatId from the [Session Info] provided at the start of this conversation. "+
 				"Either cronExpr or runAt is required.",
 		),
-		mcp.WithString("message", mcp.Required(), mcp.Description("Instruction for the AI agent when triggered. The agent's response is sent to the user. Example: 'Send a friendly good morning greeting to the user.'")),
+		mcp.WithString(
+			"message",
+			mcp.Required(),
+			mcp.Description(
+				"Instruction for the AI agent when triggered. The agent's response is sent to the user. Example: 'Send a friendly good morning greeting to the user.'",
+			),
+		),
 		mcp.WithString("channel", mcp.Required(), mcp.Description(channelDesc)),
 		mcp.WithString("chatId", mcp.Required(), mcp.Description(chatIDDesc)),
-		mcp.WithString("cronExpr", mcp.Description("5-field cron expression (minute hour day month weekday). Examples: '0 9 * * *' = daily 9am, '0 9 * * 1-5' = weekdays 9am")),
-		mcp.WithString("runAt", mcp.Description("RFC3339 timestamp for a one-time task, e.g. '2026-01-01T09:00:00+08:00'. Use instead of cronExpr for non-recurring tasks")),
+		mcp.WithString(
+			"cronExpr",
+			mcp.Description(
+				"5-field cron expression (minute hour day month weekday). Examples: '0 9 * * *' = daily 9am, '0 9 * * 1-5' = weekdays 9am",
+			),
+		),
+		mcp.WithString(
+			"runAt",
+			mcp.Description(
+				"RFC3339 timestamp for a one-time task, e.g. '2026-01-01T09:00:00+08:00'. Use instead of cronExpr for non-recurring tasks",
+			),
+		),
 		mcp.WithString("label", mcp.Description("Short description of the task, e.g. 'Daily morning greeting'")),
 	)
 }
@@ -63,7 +80,10 @@ func cronCreateHandler(store CronStore) server.ToolHandlerFunc {
 	}
 }
 
-func buildCronJobFromRequest(req mcp.CallToolRequest, channel, chatID, message string) (domain.CronJob, *mcp.CallToolResult) {
+func buildCronJobFromRequest(
+	req mcp.CallToolRequest,
+	channel, chatID, message string,
+) (domain.CronJob, *mcp.CallToolResult) {
 	job := domain.CronJob{
 		ID:        uuid.New().String(),
 		Channel:   channel,
@@ -92,8 +112,11 @@ func buildCronJobFromRequest(req mcp.CallToolRequest, channel, chatID, message s
 }
 
 func cronListTool() mcp.Tool {
-	return mcp.NewTool("cron_list",
-		mcp.WithDescription("List all scheduled tasks for the current chat. Use channel and chatId from [Session Info]."),
+	return mcp.NewTool(
+		"cron_list",
+		mcp.WithDescription(
+			"List all scheduled tasks for the current chat. Use channel and chatId from [Session Info].",
+		),
 		mcp.WithString("channel", mcp.Required(), mcp.Description(channelDesc)),
 		mcp.WithString("chatId", mcp.Required(), mcp.Description(chatIDDesc)),
 	)

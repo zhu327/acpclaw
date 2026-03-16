@@ -92,7 +92,11 @@ func (c *switchableCommand) Description() string {
 	return "List or switch " + c.cfg.noun + " (by ID or number)"
 }
 
-func (c *switchableCommand) Execute(ctx context.Context, args []string, tc *domain.TurnContext) (*domain.Result, error) {
+func (c *switchableCommand) Execute(
+	ctx context.Context,
+	args []string,
+	tc *domain.TurnContext,
+) (*domain.Result, error) {
 	if len(args) == 0 {
 		return switchableList(c.cfg, tc)
 	}
@@ -158,7 +162,12 @@ func switchableList(cfg switchableConfig, tc *domain.TurnContext) (*domain.Resul
 	return &domain.Result{Text: strings.Join(lines, "\n")}, nil
 }
 
-func switchableSwitch(cfg switchableConfig, ctx context.Context, arg string, tc *domain.TurnContext) (*domain.Result, error) {
+func switchableSwitch(
+	cfg switchableConfig,
+	ctx context.Context,
+	arg string,
+	tc *domain.TurnContext,
+) (*domain.Result, error) {
 	hint := fmt.Sprintf(". Use /%s to list available %ss.", cfg.noun, cfg.noun)
 
 	id, err := switchableResolveID(cfg, arg, tc)

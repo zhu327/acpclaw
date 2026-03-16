@@ -15,7 +15,11 @@ type ReconnectCommand struct {
 }
 
 // NewReconnectCommand creates a ReconnectCommand.
-func NewReconnectCommand(sm domain.SessionManager, defaultWs string, beforeSwitch func(ctx context.Context, chat domain.ChatRef)) *ReconnectCommand {
+func NewReconnectCommand(
+	sm domain.SessionManager,
+	defaultWs string,
+	beforeSwitch func(ctx context.Context, chat domain.ChatRef),
+) *ReconnectCommand {
 	return &ReconnectCommand{sessionMgr: sm, defaultWs: defaultWs, beforeSwitch: beforeSwitch}
 }
 
@@ -32,7 +36,9 @@ func (c *ReconnectCommand) Execute(ctx context.Context, args []string, tc *domai
 	}
 	info := c.sessionMgr.ActiveSession(tc.Chat)
 	if info != nil {
-		return &domain.Result{Text: fmt.Sprintf("ACP process reconnected. New session: `%s` in `%s`", info.SessionID, info.Workspace)}, nil
+		return &domain.Result{
+			Text: fmt.Sprintf("ACP process reconnected. New session: `%s` in `%s`", info.SessionID, info.Workspace),
+		}, nil
 	}
 	return &domain.Result{Text: "ACP process reconnected."}, nil
 }

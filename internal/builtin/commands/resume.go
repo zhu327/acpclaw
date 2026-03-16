@@ -88,7 +88,12 @@ func (c *ResumeCommand) Execute(ctx context.Context, args []string, tc *domain.T
 	return &domain.Result{Text: "Pick a session to resume:", SuppressOutbound: true}, nil
 }
 
-func (c *ResumeCommand) handleResumeByIndex(ctx context.Context, args []string, tc *domain.TurnContext, filtered []domain.SessionInfo) (*domain.Result, error) {
+func (c *ResumeCommand) handleResumeByIndex(
+	ctx context.Context,
+	args []string,
+	tc *domain.TurnContext,
+	filtered []domain.SessionInfo,
+) (*domain.Result, error) {
 	var n int
 	if _, err := fmt.Sscanf(args[0], "%d", &n); err != nil || n < 1 || n > len(filtered) {
 		return &domain.Result{Text: "Invalid session number."}, nil

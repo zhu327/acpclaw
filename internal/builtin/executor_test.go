@@ -50,7 +50,11 @@ type mockPrompter struct {
 	captured domain.PromptInput
 }
 
-func (m *mockPrompter) Prompt(ctx context.Context, chat domain.ChatRef, input domain.PromptInput) (*domain.AgentReply, error) {
+func (m *mockPrompter) Prompt(
+	ctx context.Context,
+	chat domain.ChatRef,
+	input domain.PromptInput,
+) (*domain.AgentReply, error) {
 	m.mu.Lock()
 	m.captured = input
 	blockCh := m.blockCh

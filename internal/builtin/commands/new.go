@@ -15,7 +15,11 @@ type NewCommand struct {
 }
 
 // NewNewCommand creates a NewCommand.
-func NewNewCommand(sm domain.SessionManager, defaultWs string, beforeSwitch func(ctx context.Context, chat domain.ChatRef)) *NewCommand {
+func NewNewCommand(
+	sm domain.SessionManager,
+	defaultWs string,
+	beforeSwitch func(ctx context.Context, chat domain.ChatRef),
+) *NewCommand {
 	return &NewCommand{sessionMgr: sm, defaultWs: defaultWs, beforeSwitch: beforeSwitch}
 }
 

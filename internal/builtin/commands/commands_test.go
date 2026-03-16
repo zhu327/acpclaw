@@ -55,7 +55,11 @@ type mockPrompter struct {
 	cancelErr error
 }
 
-func (m *mockPrompter) Prompt(ctx context.Context, chat domain.ChatRef, input domain.PromptInput) (*domain.AgentReply, error) {
+func (m *mockPrompter) Prompt(
+	ctx context.Context,
+	chat domain.ChatRef,
+	input domain.PromptInput,
+) (*domain.AgentReply, error) {
 	return nil, nil
 }
 

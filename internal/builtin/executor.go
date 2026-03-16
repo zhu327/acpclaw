@@ -66,7 +66,12 @@ func parseReplyToMsgID(msgID string) int {
 	return n
 }
 
-func (e *promptExecutor) queueBusyPrompt(chatID string, input domain.PromptInput, resp domain.Responder, replyToMsgID int) {
+func (e *promptExecutor) queueBusyPrompt(
+	chatID string,
+	input domain.PromptInput,
+	resp domain.Responder,
+	replyToMsgID int,
+) {
 	token := randomToken()
 	e.pendingMu.Lock()
 	old := e.pendingByChat[chatID]
@@ -126,7 +131,11 @@ func hasReplyContent(reply *domain.AgentReply) bool {
 	return reply != nil && (reply.Text != "" || len(reply.Images) > 0 || len(reply.Files) > 0)
 }
 
-func (e *promptExecutor) applyFirstTurnPrefix(input domain.PromptInput, chat domain.ChatRef, isFirstTurn bool) (domain.PromptInput, bool) {
+func (e *promptExecutor) applyFirstTurnPrefix(
+	input domain.PromptInput,
+	chat domain.ChatRef,
+	isFirstTurn bool,
+) (domain.PromptInput, bool) {
 	if !isFirstTurn || e.firstPromptPrefix == nil {
 		return input, false
 	}
@@ -145,7 +154,15 @@ func (e *promptExecutor) takeNextPending(chatID string, resp domain.Responder) *
 	return &next.input
 }
 
-func (e *promptExecutor) runPromptLoop(ctx context.Context, chatID string, input domain.PromptInput, resp domain.Responder, chat domain.ChatRef, isFirstTurn bool, state domain.State) *domain.Result {
+func (e *promptExecutor) runPromptLoop(
+	ctx context.Context,
+	chatID string,
+	input domain.PromptInput,
+	resp domain.Responder,
+	chat domain.ChatRef,
+	isFirstTurn bool,
+	state domain.State,
+) *domain.Result {
 	for {
 		input, isFirstTurn = e.applyFirstTurnPrefix(input, chat, isFirstTurn)
 		if state != nil {
@@ -195,7 +212,11 @@ func (e *promptExecutor) checkAndUpdateFirstTurn(chatID, sessionID string) bool 
 
 // executePrompt runs the prompt with busy queue logic.
 // Sets state["user_text"] and state["reply"] for StateSaver hooks.
-func (e *promptExecutor) executePrompt(ctx context.Context, action domain.Action, tc *domain.TurnContext) *domain.Result {
+func (e *promptExecutor) executePrompt(
+	ctx context.Context,
+	action domain.Action,
+	tc *domain.TurnContext,
+) *domain.Result {
 	chatID := tc.Chat.CompositeKey()
 	lock := e.chatLock(chatID)
 	if !lock.TryLock() {

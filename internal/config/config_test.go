@@ -78,18 +78,27 @@ func TestLoad_InvalidAllowedUsersFromEnv(t *testing.T) {
 func TestValidate_MissingToken(t *testing.T) {
 	cfg := &config.Config{}
 	err := cfg.Validate()
-	assert.ErrorContains(t, err, "telegram token")
+	assert.ErrorContains(t, err, "telegram channel must be configured")
+}
+
+func TestValidate_TelegramEnabledMissingToken(t *testing.T) {
+	cfg := &config.Config{
+		Telegram: config.TelegramConfig{Enabled: true},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "telegram is enabled but token is missing")
 }
 
 func TestValidate_MissingCommand(t *testing.T) {
-	cfg := &config.Config{Telegram: config.TelegramConfig{Token: "tok"}}
+	cfg := &config.Config{Telegram: config.TelegramConfig{Enabled: true, Token: "tok"}}
 	err := cfg.Validate()
 	assert.ErrorContains(t, err, "agent command")
 }
 
 func TestValidate_Valid(t *testing.T) {
 	cfg := &config.Config{
-		Telegram:    config.TelegramConfig{Token: "tok"},
+		Telegram:    config.TelegramConfig{Enabled: true, Token: "tok"},
 		Agent:       config.AgentConfig{Command: "codex"},
 		Permissions: config.PermissionsConfig{Mode: "ask"},
 	}
@@ -98,7 +107,7 @@ func TestValidate_Valid(t *testing.T) {
 
 func TestValidate_InvalidPermissionMode(t *testing.T) {
 	cfg := &config.Config{
-		Telegram:    config.TelegramConfig{Token: "tok"},
+		Telegram:    config.TelegramConfig{Enabled: true, Token: "tok"},
 		Agent:       config.AgentConfig{Command: "codex"},
 		Permissions: config.PermissionsConfig{Mode: "typo"},
 	}
@@ -109,12 +118,12 @@ func TestValidate_InvalidPermissionMode(t *testing.T) {
 
 func TestValidate_TrimmedEmptyValues(t *testing.T) {
 	cfg := &config.Config{
-		Telegram: config.TelegramConfig{Token: "   "},
+		Telegram: config.TelegramConfig{Enabled: true, Token: "   "},
 		Agent:    config.AgentConfig{Command: "   "},
 	}
 	err := cfg.Validate()
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "telegram token")
+	assert.ErrorContains(t, err, "telegram is enabled but token is missing")
 }
 
 func TestConfig_PermissionEventOutputDefault(t *testing.T) {
@@ -133,7 +142,7 @@ func TestConfig_PermissionEventOutputEnvOverride(t *testing.T) {
 
 func TestConfig_ValidatePermissionEventOutput(t *testing.T) {
 	cfg := &config.Config{
-		Telegram:    config.TelegramConfig{Token: "tok"},
+		Telegram:    config.TelegramConfig{Enabled: true, Token: "tok"},
 		Agent:       config.AgentConfig{Command: "codex"},
 		Permissions: config.PermissionsConfig{Mode: "ask", EventOutput: "invalid"},
 	}

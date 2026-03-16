@@ -124,7 +124,10 @@ func (b *BuiltinPlugin) wireAgentCallbacks() {
 	b.actObserver.SetActivityHandler(b.handleActivityBlock)
 }
 
-func (b *BuiltinPlugin) handlePermissionRequest(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse {
+func (b *BuiltinPlugin) handlePermissionRequest(
+	chat domain.ChatRef,
+	req domain.PermissionRequest,
+) <-chan domain.PermissionResponse {
 	ch := b.fw.RegisterPendingPermission(req.ID, chat)
 	if resp := b.fw.GetResponder(chat); resp != nil {
 		uiReq := domain.ChannelPermissionRequest{
@@ -219,7 +222,11 @@ func (b *BuiltinPlugin) Shutdown() {
 }
 
 // ResolveResumeChoice implements domain.ResumeHandler.
-func (b *BuiltinPlugin) ResolveResumeChoice(ctx context.Context, chat domain.ChatRef, sessionIndex int) (*domain.SessionInfo, error) {
+func (b *BuiltinPlugin) ResolveResumeChoice(
+	ctx context.Context,
+	chat domain.ChatRef,
+	sessionIndex int,
+) (*domain.SessionInfo, error) {
 	if b.resumeStore == nil {
 		return nil, nil
 	}
@@ -248,7 +255,11 @@ func (b *BuiltinPlugin) ResolveSession(ctx context.Context, msg domain.InboundMe
 }
 
 // RouteMessage implements domain.MessageRouter.
-func (b *BuiltinPlugin) RouteMessage(ctx context.Context, msg domain.InboundMessage, state domain.State) (domain.Action, error) {
+func (b *BuiltinPlugin) RouteMessage(
+	ctx context.Context,
+	msg domain.InboundMessage,
+	state domain.State,
+) (domain.Action, error) {
 	text := strings.TrimSpace(msg.Text)
 	if !strings.HasPrefix(text, "/") {
 		return domain.Action{Kind: domain.ActionPrompt, Input: convertToPromptInput(msg)}, nil
@@ -265,7 +276,11 @@ func (b *BuiltinPlugin) RouteMessage(ctx context.Context, msg domain.InboundMess
 }
 
 // ExecuteAction implements domain.ActionExecutor.
-func (b *BuiltinPlugin) ExecuteAction(ctx context.Context, action domain.Action, tc *domain.TurnContext) (*domain.Result, error) {
+func (b *BuiltinPlugin) ExecuteAction(
+	ctx context.Context,
+	action domain.Action,
+	tc *domain.TurnContext,
+) (*domain.Result, error) {
 	if action.Kind != domain.ActionPrompt {
 		return nil, nil
 	}
@@ -290,14 +305,19 @@ func (b *BuiltinPlugin) OnError(ctx context.Context, stage string, err error, ms
 }
 
 // RenderOutbound implements domain.OutboundRenderer.
-func (b *BuiltinPlugin) RenderOutbound(ctx context.Context, result *domain.Result, state domain.State) ([]domain.OutboundMessage, error) {
+func (b *BuiltinPlugin) RenderOutbound(
+	ctx context.Context,
+	result *domain.Result,
+	state domain.State,
+) ([]domain.OutboundMessage, error) {
 	if result.Reply == nil {
 		return nil, nil
 	}
 	return []domain.OutboundMessage{{
-		Text:   result.Reply.Text,
-		Images: result.Reply.Images,
-		Files:  result.Reply.Files,
+		Text:     result.Reply.Text,
+		Markdown: true,
+		Images:   result.Reply.Images,
+		Files:    result.Reply.Files,
 	}}, nil
 }
 
@@ -372,7 +392,11 @@ func (b *BuiltinPlugin) buildBeforeSessionSwitch() func(ctx context.Context, cha
 	}
 }
 
-func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(ctx context.Context, chat domain.ChatRef, summarizer *agent.AgentSummarizer) {
+func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(
+	ctx context.Context,
+	chat domain.ChatRef,
+	summarizer *agent.AgentSummarizer,
+) {
 	if b.sessionMgr.ActiveSession(chat) == nil {
 		return
 	}
@@ -541,7 +565,11 @@ func isShutdownNoise(msg string) bool {
 		strings.Contains(msg, "context deadline exceeded")
 }
 
-func (b *BuiltinPlugin) buildTelegramChannel(bot *telego.Bot, updates <-chan telego.Update, fw *framework.Framework) *telegram.TelegramChannel {
+func (b *BuiltinPlugin) buildTelegramChannel(
+	bot *telego.Bot,
+	updates <-chan telego.Update,
+	fw *framework.Framework,
+) *telegram.TelegramChannel {
 	ids := b.cfg.Telegram.AllowedUserIDs
 	names := b.cfg.Telegram.AllowedUsernames
 	allowlist := telegram.AllowlistConfig{AllowedUserIDs: ids, AllowedUsernames: names}

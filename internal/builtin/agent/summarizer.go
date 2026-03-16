@@ -50,7 +50,8 @@ func cleanSummary(raw string) string {
 }
 
 func buildSummarizePrompt(transcript string) string {
-	return fmt.Sprintf(`You are a conversation summarizer. Your ONLY job is to output a structured Markdown summary. Follow these rules strictly:
+	return fmt.Sprintf(
+		`You are a conversation summarizer. Your ONLY job is to output a structured Markdown summary. Follow these rules strictly:
 
 1. Output ONLY the Markdown content below — no thinking, no explanation, no preamble, no code fences.
 2. Start your response with the "---" front matter line. Nothing before it.
@@ -77,5 +78,8 @@ date: %s
 
 <conversation>
 %s
-</conversation>`, time.Now().Format(summarizeDateFormat), transcript)
+</conversation>`,
+		time.Now().Format(summarizeDateFormat),
+		transcript,
+	)
 }

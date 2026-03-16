@@ -76,19 +76,22 @@ func run() error {
 
 	fw.Register(bp)
 
-	bot, err := bp.CreateTelegramBot()
-	if err != nil {
-		return err
+	// Telegram setup (conditional)
+	var bot *telego.Bot
+	if cfg.Telegram.Enabled {
+		var err error
+		bot, err = bp.CreateTelegramBot()
+		if err != nil {
+			return err
+		}
+		updates, err := bot.UpdatesViaLongPolling(ctx, &telego.GetUpdatesParams{
+			AllowedUpdates: []string{"message", "callback_query"},
+		}, telego.WithLongPollingRetryTimeout(0))
+		if err != nil {
+			return err
+		}
+		bp.PrepareTelegramChannel(bot, updates, fw)
 	}
-
-	updates, err := bot.UpdatesViaLongPolling(ctx, &telego.GetUpdatesParams{
-		AllowedUpdates: []string{"message", "callback_query"},
-	}, telego.WithLongPollingRetryTimeout(0))
-	if err != nil {
-		return err
-	}
-
-	bp.PrepareTelegramChannel(bot, updates, fw)
 
 	if err := fw.Init(); err != nil {
 		return err
@@ -111,6 +114,10 @@ func startCronScheduler(ctx context.Context, cfg *config.Config, bot *telego.Bot
 	scheduler.OnTrigger(func(job domain.CronJob) {
 		if job.Channel != "telegram" {
 			slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
+			return
+		}
+		if bot == nil {
+			slog.Warn("telegram not configured for cron job", "id", job.ID, "chat_id", job.ChatID)
 			return
 		}
 		chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)

@@ -18,7 +18,7 @@ func TestFormatActivityMessage_ThinkTruncation(t *testing.T) {
 	}
 	result := formatActivityMessage(block)
 	assert.Contains(t, result, "💡 Thinking")
-	assert.Contains(t, result, "...")
+	assert.Contains(t, result, "…")
 	// The text portion should be truncated
 	lines := strings.SplitN(result, "\n\n", 3)
 	if len(lines) >= 2 {
@@ -37,7 +37,7 @@ func TestFormatActivityMessage_ShortThinkNotTruncated(t *testing.T) {
 	}
 	result := formatActivityMessage(block)
 	assert.Contains(t, result, "short thought")
-	assert.NotContains(t, result, "...")
+	assert.NotContains(t, result, "…")
 }
 
 func TestFormatActivityLine_ToolDisplay(t *testing.T) {
