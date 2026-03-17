@@ -22,7 +22,7 @@ func (c *StatusCommand) Name() string        { return "status" }
 func (c *StatusCommand) Description() string { return "Show status" }
 
 func (c *StatusCommand) Execute(ctx context.Context, args []string, tc *domain.TurnContext) (*domain.Result, error) {
-	lines := []string{"**Status**"}
+	lines := []string{"Status\n"}
 	if c.sessionMgr != nil {
 		if info := c.sessionMgr.ActiveSession(tc.Chat); info != nil {
 			lines = append(lines, fmt.Sprintf("- Session: %s", info.SessionID))

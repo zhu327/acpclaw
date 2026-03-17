@@ -145,7 +145,7 @@ func switchableList(cfg switchableConfig, tc *domain.TurnContext) (*domain.Resul
 		return &domain.Result{Text: fmt.Sprintf("No %ss available.", cfg.noun)}, nil
 	}
 
-	lines := []string{fmt.Sprintf("**Available %ss**", upperFirst(cfg.noun)), ""}
+	lines := []string{fmt.Sprintf("Available %ss", upperFirst(cfg.noun)), ""}
 	for i, item := range state.Available {
 		marker := "  "
 		if item.ID == state.CurrentID {
