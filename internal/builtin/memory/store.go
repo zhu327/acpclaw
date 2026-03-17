@@ -3,13 +3,21 @@ package memory
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/zhu327/acpclaw/internal/domain"
 	_ "modernc.org/sqlite" // SQLite driver
+)
+
+// BM25 参数
+const (
+	bm25K1 = 1.2  // 词频饱和参数
+	bm25B  = 0.75 // 文档长度归一化参数
 )
 
 // Store wraps a SQLite database for memory persistence.
@@ -92,17 +100,21 @@ func (s *Store) Get(id string) (*domain.MemoryEntry, error) {
 	return scanEntry(row)
 }
 
-// Search performs FTS5 full-text search with optional category filter.
-// Two-pass strategy (aligned with NeoClaw):
-// - Pass 1: exact FTS match (AND logic)
-// - Pass 2: if results < limit and query contains CJK, re-search with OR-expanded CJK tokens
+// Search performs FTS5 full-text search with BM25 reranking.
+// Strategy:
+// - Pass 1: FTS5 retrieves a candidate pool (max(10, limit×2))
+// - Pass 2: if results < candidateSize and query contains CJK, expand with OR-expanded tokens
+// - BM25 rerank: rerank candidates by BM25 score, return top limit
 func (s *Store) Search(query, category string, limit int) ([]domain.MemoryEntry, error) {
 	if limit <= 0 {
 		limit = 5
 	}
 
-	// Pass 1: exact match; on FTS syntax error (e.g. special chars in query), return empty to match NeoClaw
-	results, err := s.ftsSearch(query, category, limit)
+	// FTS5 候选池大小：至少 10，最多 limit×2
+	candidateSize := max(10, limit*2)
+
+	// Pass 1: FTS5 召回候选集；FTS 语法错误时返回空（与 NeoClaw 对齐）
+	candidates, err := s.ftsSearch(query, category, candidateSize)
 	if err != nil {
 		if isFtsSyntaxError(err) {
 			return nil, nil
@@ -110,11 +122,13 @@ func (s *Store) Search(query, category string, limit int) ([]domain.MemoryEntry,
 		return nil, err
 	}
 
-	// Pass 2: CJK OR fallback when exact match returns too few and query has CJK
-	if more := s.searchCjkFallback(results, query, category, limit); more != nil {
-		results = appendDeduplicated(results, more)
+	// Pass 2: CJK OR fallback 补充候选
+	if more := s.searchCjkFallback(candidates, query, category, candidateSize); more != nil {
+		candidates = appendDeduplicated(candidates, more)
 	}
-	return results, nil
+
+	// BM25 重排序，从候选集中返回 top limit
+	return bm25Rerank(candidates, query, limit), nil
 }
 
 // searchCjkFallback runs OR-expanded CJK search when pass 1 returned fewer than limit results.
@@ -413,4 +427,111 @@ func buildCjkOrQuery(raw string) string {
 		quoted[i] = `"` + t + `"`
 	}
 	return strings.Join(quoted, " OR ")
+}
+
+// isBm25TokenChar 判断字符是否参与 BM25 分词（小写字母、数字、CJK）。
+func isBm25TokenChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') ||
+		(r >= '\u4e00' && r <= '\u9fff') || (r >= '\u3400' && r <= '\u4dbf')
+}
+
+// bm25Tokenize 将文本分词为小写词元（与 opencode BM25 实现对齐）。
+func bm25Tokenize(text string) []string {
+	var buf strings.Builder
+	for _, ch := range strings.ToLower(text) {
+		if isBm25TokenChar(ch) {
+			buf.WriteRune(ch)
+		} else {
+			buf.WriteRune(' ')
+		}
+	}
+	var tokens []string
+	for _, t := range strings.Fields(buf.String()) {
+		if len([]rune(t)) > 1 {
+			tokens = append(tokens, t)
+		}
+	}
+	return tokens
+}
+
+// bm25Score 计算单个文档相对查询词的 BM25 得分。
+// termFreq: 文档词频表，docLen: 文档长度，
+// avgDocLen: 所有文档平均长度，docCount: 文档总数，dfMap: 词→含该词的文档数。
+func bm25Score(queryTerms []string, termFreq map[string]int, docLen, avgDocLen float64, docCount int, dfMap map[string]int) float64 {
+	var score float64
+	for _, term := range queryTerms {
+		tf := float64(termFreq[term])
+		if tf == 0 {
+			continue
+		}
+		n := float64(dfMap[term])
+		N := float64(docCount)
+		// BM25 IDF 公式（Robertson & Sparck Jones）
+		idf := math.Log((N-n+0.5)/(n+0.5) + 1)
+		// BM25 TF 归一化
+		numerator := tf * (bm25K1 + 1)
+		denominator := tf + bm25K1*(1-bm25B+bm25B*(docLen/avgDocLen))
+		score += idf * (numerator / denominator)
+	}
+	return score
+}
+
+// docInfo 文档 BM25 计算所需信息
+type docInfo struct {
+	entry    domain.MemoryEntry
+	termFreq map[string]int
+	docLen   int
+}
+
+// scored 带 BM25 分数的条目
+type scored struct {
+	entry domain.MemoryEntry
+	score float64
+}
+
+// bm25Rerank 对 FTS5 候选集用 BM25 重排序，返回 top limit 条。
+func bm25Rerank(candidates []domain.MemoryEntry, query string, limit int) []domain.MemoryEntry {
+	if len(candidates) <= limit {
+		return candidates
+	}
+	queryTerms := bm25Tokenize(query)
+	if len(queryTerms) == 0 {
+		return candidates[:limit]
+	}
+
+	docs := make([]docInfo, len(candidates))
+	dfMap := make(map[string]int, 64)
+	var totalLen int
+
+	for i, e := range candidates {
+		tokens := bm25Tokenize(e.Title + " " + e.Content)
+		freq := make(map[string]int, len(tokens))
+		for _, t := range tokens {
+			freq[t]++
+		}
+		for t := range freq {
+			dfMap[t]++
+		}
+		docs[i] = docInfo{entry: e, termFreq: freq, docLen: len(tokens)}
+		totalLen += len(tokens)
+	}
+
+	avgDocLen := float64(totalLen) / float64(len(docs))
+	docCount := len(docs)
+	ranked := make([]scored, len(docs))
+	for i, d := range docs {
+		ranked[i] = scored{
+			entry: d.entry,
+			score: bm25Score(queryTerms, d.termFreq, float64(d.docLen), avgDocLen, docCount, dfMap),
+		}
+	}
+
+	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+
+	top := min(limit, len(ranked))
+	result := make([]domain.MemoryEntry, top)
+	for i := range top {
+		result[i] = ranked[i].entry
+	}
+	return result
 }

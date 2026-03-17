@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,47 @@ func TestStore_Search(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "e1", results[0].ID)
+}
+
+func TestStore_Search_BM25Rerank(t *testing.T) {
+	store := newTestStore(t, "")
+
+	// e1: "Go" 出现 3 次（高频），应排在 e2 之前
+	_ = store.Upsert(domain.MemoryEntry{
+		ID: "e1", Category: "knowledge", Title: "Go Guide",
+		Content: "Go is great. Go is fast. Use Go for backend.", Date: "2026-03-12",
+	})
+	// e2: "Go" 仅出现 1 次，且文档更长（BM25 会惩罚长文档中低频词）
+	_ = store.Upsert(domain.MemoryEntry{
+		ID: "e2", Category: "knowledge", Title: "Programming Languages",
+		Content: "There are many languages: Python, Java, Ruby, Rust, Go, and more. Each has trade-offs.",
+		Date:    "2026-03-11",
+	})
+
+	results, err := store.Search("Go", "", 5)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(results), 1)
+	// e1 词频更高、文档更短，BM25 应排在首位
+	assert.Equal(t, "e1", results[0].ID)
+}
+
+func TestStore_Search_BM25RerankLimit(t *testing.T) {
+	store := newTestStore(t, "")
+
+	// 插入 6 条包含 "memory" 的记录，Search limit=3 应只返回 3 条
+	for i := range 6 {
+		_ = store.Upsert(domain.MemoryEntry{
+			ID:       fmt.Sprintf("m%d", i),
+			Category: "knowledge",
+			Title:    fmt.Sprintf("Memory Note %d", i),
+			Content:  fmt.Sprintf("This note %d is about memory management and allocation.", i),
+			Date:     "2026-03-12",
+		})
+	}
+
+	results, err := store.Search("memory", "", 3)
+	require.NoError(t, err)
+	assert.Equal(t, 3, len(results))
 }
 
 func TestStore_Reindex(t *testing.T) {
