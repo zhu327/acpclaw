@@ -195,7 +195,7 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 		commands.NewSessionCommand(b.sessionMgr),
 		commands.NewResumeCommand(b.sessionMgr, b.resumeStore),
 		commands.NewCancelCommand(b.prompter),
-		commands.NewReconnectCommand(b.sessionMgr, defaultWs, beforeSwitch),
+		commands.NewReconnectCommand(b.sessionMgr, defaultWs),
 		commands.NewStatusCommand(b.sessionMgr),
 		commands.NewModelCommand(b.modelMgr),
 		commands.NewModeCommand(b.modeMgr),

@@ -305,14 +305,10 @@ func TestNewCommand_NilBeforeSwitch(t *testing.T) {
 }
 
 func TestReconnectCommand_CallsBeforeSwitch(t *testing.T) {
-	var calledChat domain.ChatRef
-	beforeSwitch := func(ctx context.Context, chat domain.ChatRef) {
-		calledChat = chat
-	}
 	sm := &mockSessionManager{
 		activeSession: &domain.SessionInfo{SessionID: "s-rc", Workspace: "/rc"},
 	}
-	cmd := NewReconnectCommand(sm, "/default", beforeSwitch)
+	cmd := NewReconnectCommand(sm, "/default")
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "99"},
 		State: domain.State{},
@@ -320,7 +316,6 @@ func TestReconnectCommand_CallsBeforeSwitch(t *testing.T) {
 
 	_, err := cmd.Execute(context.Background(), nil, tc)
 	require.NoError(t, err)
-	assert.Equal(t, "99", calledChat.ChatID)
 	assert.True(t, sm.reconnectCalled)
 }
 
@@ -333,7 +328,7 @@ func TestReconnectCommand_Success(t *testing.T) {
 			UpdatedAt: time.Now(),
 		},
 	}
-	cmd := NewReconnectCommand(sm, "/default", nil)
+	cmd := NewReconnectCommand(sm, "/default")
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
 		State: domain.State{},
