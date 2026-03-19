@@ -64,22 +64,13 @@ func (h *History) ReadUnsummarizedWithSpans(chatID string) (string, []HistorySpa
 	if err != nil {
 		return "", nil, err
 	}
-
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
+	files, err := listHistoryFileNames(dir)
+	if err != nil {
+		return "", nil, err
+	}
+	if files == nil {
 		return "", nil, nil
 	}
-	if err != nil {
-		return "", nil, fmt.Errorf("read history dir: %w", err)
-	}
-
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
-			files = append(files, e.Name())
-		}
-	}
-	sort.Strings(files)
 
 	var sb strings.Builder
 	var spans []HistorySpan
@@ -162,16 +153,47 @@ func (h *History) ReadRawHistory(chatID, date string, start, end int64) (string,
 		return "", fmt.Errorf("seek: %w", err)
 	}
 
-	n := int(length)
-	buf := make([]byte, n)
+	buf := make([]byte, int(length))
 	read, err := io.ReadFull(f, buf)
-	if err == nil {
+	switch {
+	case err == nil:
 		return string(buf), nil
-	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
 		return string(buf[:read]), nil
+	default:
+		return "", fmt.Errorf("read: %w", err)
 	}
-	return "", fmt.Errorf("read: %w", err)
+}
+
+// FormatRawReferenceMetadata returns "> Raw Reference:" lines for each span, for appending to episode summaries.
+func FormatRawReferenceMetadata(chatKey string, spans []HistorySpan) string {
+	if len(spans) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, span := range spans {
+		fmt.Fprintf(&sb, "\n\n> Raw Reference: chat_key=%s, date=%s, start_offset=%d, end_offset=%d",
+			chatKey, span.Date, span.Start, span.End)
+	}
+	return sb.String()
+}
+
+func listHistoryFileNames(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read history dir: %w", err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 func (h *History) loadOffsets(chatID string) (map[string]int64, error) {

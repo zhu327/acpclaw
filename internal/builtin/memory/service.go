@@ -76,13 +76,8 @@ func (s *Service) BuildSessionContext(ctx context.Context) (string, error) {
 		}
 	}
 
-	if episodes, err := s.store.List("episode"); err == nil && len(episodes) > 0 {
-		limit := min(3, len(episodes))
-		var lines []string
-		for _, ep := range episodes[:limit] {
-			lines = append(lines, fmt.Sprintf("- %s: %s", ep.Date, ep.Title))
-		}
-		sections = append(sections, "<recent_episodes>\n"+strings.Join(lines, "\n")+"\n</recent_episodes>")
+	if block := formatRecentEpisodes(s.store); block != "" {
+		sections = append(sections, block)
 	}
 
 	if len(sections) == 0 {
@@ -200,6 +195,19 @@ func (s *Service) StartPeriodicReindex(ctx context.Context) {
 }
 
 // --- helpers ---
+
+func formatRecentEpisodes(store *Store) string {
+	episodes, err := store.List("episode")
+	if err != nil || len(episodes) == 0 {
+		return ""
+	}
+	limit := min(3, len(episodes))
+	lines := make([]string, limit)
+	for i, ep := range episodes[:limit] {
+		lines[i] = fmt.Sprintf("- %s: %s", ep.Date, ep.Title)
+	}
+	return "<recent_episodes>\n" + strings.Join(lines, "\n") + "\n</recent_episodes>"
+}
 
 // HasSubstantiveContent returns true if content has real data beyond template placeholders.
 func HasSubstantiveContent(content string) bool {

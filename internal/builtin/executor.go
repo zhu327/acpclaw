@@ -230,5 +230,8 @@ func (e *promptExecutor) executePrompt(
 }
 
 func buildSessionInfoBlock(chat domain.ChatRef) string {
-	return "[Session Info]\nchannel: " + chat.ChannelKind + "\nchat_id: " + chat.ChatID + "\n[/Session Info]"
+	return "<session_info>\n" +
+		"channel: " + chat.ChannelKind + "\n" +
+		"chat_id: " + chat.ChatID + "\n" +
+		"</session_info>"
 }

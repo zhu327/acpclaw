@@ -401,7 +401,7 @@ func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(
 		return
 	}
 	chatKey := chat.CompositeKey()
-	transcript, err := b.memorySvc.ReadUnsummarized(chatKey)
+	transcript, spans, err := b.memorySvc.ReadUnsummarizedWithSpans(chatKey)
 	if err != nil {
 		slog.Warn("failed to read unsummarized history", "chat", chatKey, "error", err)
 		return
@@ -419,6 +419,7 @@ func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(
 	if strings.TrimSpace(summary) == "" {
 		return
 	}
+	summary += memory.FormatRawReferenceMetadata(chatKey, spans)
 	title := extractTitleFromSummary(summary)
 	entry := domain.MemoryEntry{
 		ID:       episodeID(),

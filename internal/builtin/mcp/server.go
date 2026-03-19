@@ -13,6 +13,11 @@ type MemoryStore interface {
 	List(category string) ([]domain.MemoryEntry, error)
 }
 
+// HistoryReader provides byte-range access to raw conversation history.
+type HistoryReader interface {
+	ReadRawHistory(chatKey, date string, start, end int64) (string, error)
+}
+
 // CronStore defines the interface required by MCP cron tools.
 type CronStore interface {
 	AddJob(job domain.CronJob) error
@@ -21,8 +26,8 @@ type CronStore interface {
 	ListAllJobs() ([]domain.CronJob, error)
 }
 
-// NewServerWithMemoryAndCron creates an MCP server with memory and cron tools.
-func NewServerWithMemoryAndCron(memoryStore MemoryStore, cronStore CronStore) *server.MCPServer {
+// NewServer creates an MCP server with memory, history, and cron tools.
+func NewServer(memoryStore MemoryStore, historyReader HistoryReader, cronStore CronStore) *server.MCPServer {
 	s := server.NewMCPServer("acpclaw", "1.0.0")
 
 	if memoryStore != nil {
@@ -30,6 +35,10 @@ func NewServerWithMemoryAndCron(memoryStore MemoryStore, cronStore CronStore) *s
 		s.AddTool(memorySearchTool(), memorySearchHandler(memoryStore))
 		s.AddTool(memorySaveTool(), memorySaveHandler(memoryStore))
 		s.AddTool(memoryListTool(), memoryListHandler(memoryStore))
+
+		if historyReader != nil {
+			s.AddTool(expandEpisodeTool(), expandEpisodeHandler(memoryStore, historyReader))
+		}
 	}
 
 	if cronStore != nil {

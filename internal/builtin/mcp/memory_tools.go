@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -83,6 +84,98 @@ func memoryListTool() mcp.Tool {
 		mcp.WithDescription("List all stored memory entries. Returns id, title, category, and date for each entry."),
 		mcp.WithString("category", mcp.Description("Optional filter: 'identity', 'episode', or 'knowledge'")),
 	)
+}
+
+func expandEpisodeTool() mcp.Tool {
+	return mcp.NewTool(
+		"expand_episode",
+		mcp.WithDescription(
+			"Retrieve the full raw conversation transcript for a session episode. "+
+				"Use this when an episode summary mentions 'Expand for details' and you need "+
+				"the exact original dialogue (code, errors, commands, etc.).",
+		),
+		mcp.WithString("episodeId", mcp.Required(),
+			mcp.Description("Episode ID from memory_list or memory_search, e.g. '2026-03-19-143022-a1b2'")),
+	)
+}
+
+// rawReference holds parsed offset metadata from an episode's "> Raw Reference:" lines.
+type rawReference struct {
+	ChatKey string
+	Date    string
+	Start   int64
+	End     int64
+}
+
+func expandEpisodeHandler(store MemoryStore, history HistoryReader) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		episodeID := mcp.ParseString(req, "episodeId", "")
+		if episodeID == "" {
+			return mcp.NewToolResultError("episodeId is required"), nil
+		}
+
+		episode, err := store.Read(episodeID)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("read episode: %v", err)), nil
+		}
+		if episode == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("episode %q not found", episodeID)), nil
+		}
+
+		refs := parseRawReferences(episode.Content)
+		if len(refs) == 0 {
+			return mcp.NewToolResultText("No raw transcript references found in this episode."), nil
+		}
+		parts := make([]string, len(refs))
+		for i, ref := range refs {
+			parts[i] = readRawChunkOrPlaceholder(history, ref)
+		}
+		return mcp.NewToolResultText(strings.Join(parts, "\n\n---\n\n")), nil
+	}
+}
+
+func readRawChunkOrPlaceholder(history HistoryReader, ref rawReference) string {
+	chunk, err := history.ReadRawHistory(ref.ChatKey, ref.Date, ref.Start, ref.End)
+	if err != nil {
+		slog.Warn("expand_episode: failed to read raw history", "date", ref.Date, "error", err)
+		return fmt.Sprintf("[error reading %s]", ref.Date)
+	}
+	return chunk
+}
+
+func parseRawReferences(content string) []rawReference {
+	var refs []rawReference
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "> Raw Reference:") {
+			continue
+		}
+		var ref rawReference
+		for _, pair := range strings.Split(strings.TrimPrefix(line, "> Raw Reference:"), ",") {
+			k, v, ok := strings.Cut(strings.TrimSpace(pair), "=")
+			if !ok {
+				continue
+			}
+			applyRefField(&ref, strings.TrimSpace(k), strings.TrimSpace(v))
+		}
+		if ref.ChatKey != "" && ref.Date != "" {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func applyRefField(ref *rawReference, k, v string) {
+	switch k {
+	case "chat_key":
+		ref.ChatKey = v
+	case "date":
+		ref.Date = v
+	case "start_offset":
+		_, _ = fmt.Sscanf(v, "%d", &ref.Start)
+	case "end_offset":
+		_, _ = fmt.Sscanf(v, "%d", &ref.End)
+	}
 }
 
 func memoryReadHandler(svc MemoryStore) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {

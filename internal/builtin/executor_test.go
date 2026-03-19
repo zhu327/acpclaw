@@ -275,9 +275,9 @@ func TestExecutePrompt_FirstTurnPrefix(t *testing.T) {
 func TestBuildSessionInfoBlock(t *testing.T) {
 	chat := domain.ChatRef{ChannelKind: "telegram", ChatID: "12345"}
 	block := buildSessionInfoBlock(chat)
-	assert.Equal(t, "[Session Info]\nchannel: telegram\nchat_id: 12345\n[/Session Info]", block)
+	assert.Equal(t, "<session_info>\nchannel: telegram\nchat_id: 12345\n</session_info>", block)
 
 	chat2 := domain.ChatRef{ChannelKind: "test", ChatID: "1"}
 	block2 := buildSessionInfoBlock(chat2)
-	assert.Equal(t, "[Session Info]\nchannel: test\nchat_id: 1\n[/Session Info]", block2)
+	assert.Equal(t, "<session_info>\nchannel: test\nchat_id: 1\n</session_info>", block2)
 }
