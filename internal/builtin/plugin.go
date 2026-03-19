@@ -199,6 +199,7 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 		commands.NewStatusCommand(b.sessionMgr),
 		commands.NewModelCommand(b.modelMgr),
 		commands.NewModeCommand(b.modeMgr),
+		commands.NewRestartCommand(b.Shutdown),
 	}
 }
 
