@@ -57,6 +57,7 @@ func buildSummarizePrompt(transcript string) string {
 2. Start your response with the "---" front matter line. Nothing before it.
 3. Keep the summary concise and factual. Use the same language as the conversation.
 4. If a section has no relevant content, write "- N/A".
+5. End your response with exactly one line: "Expand for details: <comma-separated list of dropped specifics, e.g. exact commands, full error output, code snippets>"
 
 ---
 title: "<concise title, 10 words or fewer>"
@@ -72,9 +73,6 @@ date: %s
 
 ## Decisions & Outcomes
 - <decisions made or results produced>
-
-## Notable Information
-- <key information worth remembering, e.g. configs, IDs, names>
 
 <conversation>
 %s

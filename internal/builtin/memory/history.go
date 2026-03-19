@@ -2,13 +2,23 @@ package memory
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
+
+// HistorySpan represents the byte range of unsummarized content within a single day's file.
+type HistorySpan struct {
+	Date  string // "2006-01-02"
+	Start int64  // byte offset (inclusive)
+	End   int64  // byte offset (exclusive, i.e. file size at read time)
+}
 
 // History manages per-chat conversation history files.
 type History struct {
@@ -43,21 +53,26 @@ func (h *History) Append(chatID, role, text string) error {
 
 // ReadUnsummarized reads all history content after the last summarized offset.
 func (h *History) ReadUnsummarized(chatID string) (string, error) {
+	content, _, err := h.ReadUnsummarizedWithSpans(chatID)
+	return content, err
+}
+
+// ReadUnsummarizedWithSpans reads unsummarized content and returns spans for each file with new content.
+func (h *History) ReadUnsummarizedWithSpans(chatID string) (string, []HistorySpan, error) {
 	dir := filepath.Join(h.historyDir, chatID)
 	offsets, err := h.loadOffsets(chatID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return "", nil
+		return "", nil, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("read history dir: %w", err)
+		return "", nil, fmt.Errorf("read history dir: %w", err)
 	}
 
-	// Collect .txt files sorted by name (date order)
 	var files []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
@@ -67,19 +82,24 @@ func (h *History) ReadUnsummarized(chatID string) (string, error) {
 	sort.Strings(files)
 
 	var sb strings.Builder
+	var spans []HistorySpan
 	for _, fname := range files {
 		offset := offsets[fname]
 		path := filepath.Join(dir, fname)
 		data, err := os.ReadFile(path)
 		if err != nil {
+			slog.Warn("failed to read history file", "path", path, "error", err)
 			continue
 		}
-		if offset >= int64(len(data)) {
+		size := int64(len(data))
+		if offset >= size {
 			continue
 		}
 		sb.Write(data[offset:])
+		date := strings.TrimSuffix(fname, ".txt")
+		spans = append(spans, HistorySpan{Date: date, Start: offset, End: size})
 	}
-	return sb.String(), nil
+	return sb.String(), spans, nil
 }
 
 // MarkSummarized records the current end-of-file offsets so future reads skip them.
@@ -111,6 +131,47 @@ func (h *History) MarkSummarized(chatID string) error {
 	}
 	offsetPath := filepath.Join(dir, ".last-summarized-offset")
 	return os.WriteFile(offsetPath, data, 0o644)
+}
+
+// ReadRawHistory reads a byte range [start, end) from a specific day's history file.
+// Returns an error if the requested range exceeds 1MB to prevent unbounded reads.
+func (h *History) ReadRawHistory(chatID, date string, start, end int64) (string, error) {
+	path := filepath.Clean(filepath.Join(h.historyDir, chatID, date+".txt"))
+	if !strings.HasPrefix(path, filepath.Clean(h.historyDir)+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid chat_key or date: path escape detected")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open history file: %w", err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Warn("failed to close history file", "error", err)
+		}
+	}()
+
+	length := end - start
+	if length <= 0 {
+		return "", nil
+	}
+	if length > 1<<20 {
+		return "", fmt.Errorf("requested range too large: %d bytes", length)
+	}
+
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seek: %w", err)
+	}
+
+	n := int(length)
+	buf := make([]byte, n)
+	read, err := io.ReadFull(f, buf)
+	if err == nil {
+		return string(buf), nil
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return string(buf[:read]), nil
+	}
+	return "", fmt.Errorf("read: %w", err)
 }
 
 func (h *History) loadOffsets(chatID string) (map[string]int64, error) {

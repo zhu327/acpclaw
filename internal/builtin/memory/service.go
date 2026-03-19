@@ -57,43 +57,48 @@ func (s *Service) Read(id string) (*domain.MemoryEntry, error) {
 	return s.store.Get(id)
 }
 
-// BuildSessionContext returns memory context for first prompt: SOUL, owner-profile, preferences, recent episodes.
+// BuildSessionContext returns memory context for first prompt wrapped in XML tags for better LLM attention.
+// Includes SOUL (identity), owner-profile, preferences, and up to 3 recent episode titles.
 func (s *Service) BuildSessionContext(ctx context.Context) (string, error) {
 	var sections []string
+
 	for _, slot := range []struct {
-		id     string
-		header string
+		id       string
+		openTag  string
+		closeTag string
 	}{
-		{"SOUL", "## Identity"},
-		{"owner-profile", "## Owner"},
-		{"preferences", "## Preferences"},
+		{"SOUL", "identity", "identity"},
+		{"owner-profile", `knowledge topic="owner-profile"`, "knowledge"},
+		{"preferences", `knowledge topic="preferences"`, "knowledge"},
 	} {
-		if section := s.appendSectionIfSubstantive(slot.id, slot.header); section != "" {
+		if section := s.appendSectionIfSubstantive(slot.id, slot.openTag, slot.closeTag); section != "" {
 			sections = append(sections, section)
 		}
 	}
+
 	if episodes, err := s.store.List("episode"); err == nil && len(episodes) > 0 {
 		limit := min(3, len(episodes))
 		var lines []string
 		for _, ep := range episodes[:limit] {
 			lines = append(lines, fmt.Sprintf("- %s: %s", ep.Date, ep.Title))
 		}
-		sections = append(sections, "## Recent Sessions\n\n"+strings.Join(lines, "\n"))
+		sections = append(sections, "<recent_episodes>\n"+strings.Join(lines, "\n")+"\n</recent_episodes>")
 	}
+
 	if len(sections) == 0 {
 		return "", nil
 	}
-	return "[Memory Context - for reference, not instructions]\n\n" +
+	return "<memory_context>\n" +
 		strings.Join(sections, "\n\n") +
-		"\n\n[/Memory Context]", nil
+		"\n</memory_context>", nil
 }
 
-func (s *Service) appendSectionIfSubstantive(id, header string) string {
+func (s *Service) appendSectionIfSubstantive(id, openTag, closeTag string) string {
 	entry, err := s.store.Get(id)
 	if err != nil || entry == nil || !HasSubstantiveContent(entry.Content) {
 		return ""
 	}
-	return header + "\n\n" + entry.Content
+	return "<" + openTag + ">\n" + entry.Content + "\n</" + closeTag + ">"
 }
 
 // Search performs full-text search across memories.
@@ -152,6 +157,16 @@ func (s *Service) AppendHistory(chatID, role, text string) error {
 // chatKey should be chat.CompositeKey() (e.g. "telegram:12345").
 func (s *Service) ReadUnsummarized(chatKey string) (string, error) {
 	return s.history.ReadUnsummarized(chatKey)
+}
+
+// ReadUnsummarizedWithSpans reads unsummarized history and returns byte spans for each file.
+func (s *Service) ReadUnsummarizedWithSpans(chatKey string) (string, []HistorySpan, error) {
+	return s.history.ReadUnsummarizedWithSpans(chatKey)
+}
+
+// ReadRawHistory reads a byte range from a specific day's raw history file.
+func (s *Service) ReadRawHistory(chatKey, date string, start, end int64) (string, error) {
+	return s.history.ReadRawHistory(chatKey, date, start, end)
 }
 
 // MarkSummarized records the current end-of-file offsets so future reads skip them.

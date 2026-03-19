@@ -31,6 +31,6 @@ func runMCP() error {
 	}
 
 	cronStore := cron.NewStore(cronDir)
-	s := internalmcp.NewServerWithMemoryAndCron(memorySvc, cronStore)
+	s := internalmcp.NewServer(memorySvc, memorySvc, cronStore)
 	return server.ServeStdio(s)
 }
