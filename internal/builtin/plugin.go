@@ -417,11 +417,15 @@ func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(
 		slog.Warn("session summarization failed", "chat", chatKey, "error", err)
 		return
 	}
-	if strings.TrimSpace(summary) == "" {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
 		return
 	}
-	summary += memory.FormatRawReferenceMetadata(chatKey, spans)
 	title := extractTitleFromSummary(summary)
+	if !strings.HasPrefix(summary, "---") {
+		slog.Warn("summary missing YAML front matter, raw references will be lost", "chat", chatKey)
+	}
+	summary = memory.InsertRawReferences(summary, chatKey, spans)
 	entry := domain.MemoryEntry{
 		ID:       episodeID(),
 		Category: "episode",

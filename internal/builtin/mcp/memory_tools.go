@@ -91,7 +91,7 @@ func expandEpisodeTool() mcp.Tool {
 		"expand_episode",
 		mcp.WithDescription(
 			"Retrieve the full raw conversation transcript for a session episode. "+
-				"Use this when an episode summary mentions 'Expand for details' and you need "+
+				"Use this when an episode summary has expand_details in its front matter and you need "+
 				"the exact original dialogue (code, errors, commands, etc.).",
 		),
 		mcp.WithString("episodeId", mcp.Required(),
@@ -107,7 +107,10 @@ type rawReference struct {
 	End     int64
 }
 
-func expandEpisodeHandler(store MemoryStore, history HistoryReader) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func expandEpisodeHandler(
+	store MemoryStore,
+	history HistoryReader,
+) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		episodeID := mcp.ParseString(req, "episodeId", "")
 		if episodeID == "" {

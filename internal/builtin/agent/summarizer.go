@@ -55,13 +55,13 @@ func buildSummarizePrompt(transcript string) string {
 1. Output ONLY the Markdown content below — no thinking, no explanation, no preamble, no code fences.
 2. Start your response with the "---" front matter line. Nothing before it.
 3. Keep the summary concise and factual. Use the same language as the conversation.
-4. If a section has no relevant content, write "- N/A".
-5. End your response with exactly one line: "Expand for details: <comma-separated list of dropped specifics, e.g. exact commands, full error output, code snippets>"`
+4. If a section has no relevant content, write "- N/A".`
 
 	const template = `
 ---
 title: "<concise title, 10 words or fewer>"
 date: %s
+expand_details: "<comma-separated list of dropped specifics, e.g. exact commands, full error output, code snippets>"
 ---
 
 ## Summary
@@ -77,5 +77,6 @@ date: %s
 <conversation>
 %s
 </conversation>`
-	return rules + fmt.Sprintf(template, time.Now().Format(summarizeDateFormat), transcript)
+	date := time.Now().Format(summarizeDateFormat)
+	return rules + fmt.Sprintf(template, date, transcript)
 }

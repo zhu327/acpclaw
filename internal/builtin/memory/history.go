@@ -165,17 +165,29 @@ func (h *History) ReadRawHistory(chatID, date string, start, end int64) (string,
 	}
 }
 
-// FormatRawReferenceMetadata returns "> Raw Reference:" lines for each span, for appending to episode summaries.
-func FormatRawReferenceMetadata(chatKey string, spans []HistorySpan) string {
+// InsertRawReferences 将 raw_references 插入 content 中已有的 YAML front matter。
+// 如果 content 没有 front matter 或无 spans，则原样返回。
+func InsertRawReferences(content, chatKey string, spans []HistorySpan) string {
 	if len(spans) == 0 {
-		return ""
+		return content
 	}
+	closeAt, ok := closingYAMLDelimiter(content)
+	if !ok {
+		return content
+	}
+
 	var sb strings.Builder
+	sb.WriteString("raw_references:\n")
 	for _, span := range spans {
-		fmt.Fprintf(&sb, "\n\n> Raw Reference: chat_key=%s, date=%s, start_offset=%d, end_offset=%d",
+		fmt.Fprintf(&sb, "  - chat_key=%s, date=%s, start_offset=%d, end_offset=%d\n",
 			chatKey, span.Date, span.Start, span.End)
 	}
-	return sb.String()
+
+	prefix := content[:closeAt]
+	if !strings.HasSuffix(prefix, "\n") {
+		prefix += "\n"
+	}
+	return prefix + sb.String() + content[closeAt:]
 }
 
 func listHistoryFileNames(dir string) ([]string, error) {

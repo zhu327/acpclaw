@@ -102,6 +102,7 @@ func (s *Service) Search(query, category string) ([]domain.MemoryEntry, error) {
 }
 
 // Save writes a MemoryEntry to both the Markdown file and SQLite store.
+// 如果 Content 包含 YAML front matter（如 episode），写文件时直接使用，入库前剥离以保持一致性。
 func (s *Service) Save(entry domain.MemoryEntry) error {
 	if entry.Date == "" {
 		entry.Date = time.Now().Format("2006-01-02")
@@ -115,7 +116,8 @@ func (s *Service) Save(entry domain.MemoryEntry) error {
 	if err := os.WriteFile(filePath, []byte(mdContent), 0o644); err != nil {
 		return fmt.Errorf("write markdown file: %w", err)
 	}
-	return s.store.Upsert(entry)
+
+	return s.store.Upsert(episodeEntryForStore(entry))
 }
 
 // resolveEntryFilePath determines the Markdown file path from category and ensures the directory exists.
@@ -225,7 +227,19 @@ func HasSubstantiveContent(content string) bool {
 	return false
 }
 
+// episodeEntryForStore strips leading YAML from episode content before upsert (matches reindex/FTS shape).
+func episodeEntryForStore(entry domain.MemoryEntry) domain.MemoryEntry {
+	if entry.Category != "episode" || !strings.HasPrefix(entry.Content, "---") {
+		return entry
+	}
+	_, _, _, entry.Content = parseFrontmatter(entry.Content)
+	return entry
+}
+
 func buildMarkdownFile(e domain.MemoryEntry) string {
+	if e.Category == "episode" && strings.HasPrefix(e.Content, "---") {
+		return e.Content
+	}
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	fmt.Fprintf(&sb, "title: %q\n", e.Title)

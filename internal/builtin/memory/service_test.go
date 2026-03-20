@@ -3,6 +3,8 @@ package memory_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 
@@ -138,4 +140,43 @@ func TestService_SaveAndRead(t *testing.T) {
 	require.NotNil(t, entry)
 	assert.Equal(t, "preferences", entry.ID)
 	assert.Contains(t, entry.Content, "dark mode")
+}
+
+func TestService_Save_EpisodeWithYAMLFrontMatter_PersistsFileAndStripsDBContent(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := memory.NewService(dir, dir, fstest.MapFS{})
+	require.NoError(t, err)
+	defer func() { _ = svc.Close() }()
+
+	full := `---
+title: "Episode YAML"
+date: 2026-03-15
+expand_details: more context
+raw_references:
+  - ref-one
+  - ref-two
+---
+
+Episode body line.
+`
+	require.NoError(t, svc.Save(domain.MemoryEntry{
+		ID:       "ep-yaml",
+		Category: "episode",
+		Title:    "Caller Title",
+		Content:  full,
+		Date:     "2026-03-15",
+	}))
+
+	disk, err := os.ReadFile(filepath.Join(dir, "episode", "ep-yaml.md"))
+	require.NoError(t, err)
+	assert.Equal(t, full, string(disk))
+
+	got, err := svc.Read("ep-yaml")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.NotContains(t, got.Content, "---")
+	assert.Contains(t, got.Content, "Episode body line.")
+	assert.Contains(t, got.Content, "Expand for details: more context")
+	assert.Contains(t, got.Content, "> Raw Reference: ref-one")
+	assert.Contains(t, got.Content, "> Raw Reference: ref-two")
 }

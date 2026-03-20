@@ -128,6 +128,71 @@ Some test content here.
 	assert.Equal(t, "Test Notes", got.Title)
 }
 
+func TestStore_Reindex_FrontmatterExpandDetailsAndRawReferences(t *testing.T) {
+	dir := t.TempDir()
+	store := newTestStore(t, dir)
+
+	knowledgeDir := filepath.Join(dir, "knowledge")
+	require.NoError(t, os.MkdirAll(knowledgeDir, 0o755))
+	md := `---
+title: "Ref Doc"
+date: 2026-03-12
+tags: [alpha, beta]
+expand_details: hidden detail text
+raw_references:
+  - chat_key=k, date=2026-01-01, start=1, end=2
+  - second ref line
+---
+
+Main body paragraph.
+`
+	require.NoError(t, os.WriteFile(filepath.Join(knowledgeDir, "refdoc.md"), []byte(md), 0o644))
+
+	require.NoError(t, store.Reindex(dir))
+
+	got, err := store.Get("refdoc")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "Ref Doc", got.Title)
+	assert.Equal(t, "2026-03-12", got.Date)
+	assert.Equal(t, []string{"alpha", "beta"}, got.Tags)
+	assert.NotContains(t, got.Content, "---")
+	assert.Contains(t, got.Content, "Main body paragraph.")
+	assert.Contains(t, got.Content, "Expand for details: hidden detail text")
+	assert.Contains(t, got.Content, "> Raw Reference: chat_key=k, date=2026-01-01, start=1, end=2")
+	assert.Contains(t, got.Content, "> Raw Reference: second ref line")
+}
+
+func TestStore_Reindex_EpisodeYAMLReconstructsBodyInDB(t *testing.T) {
+	dir := t.TempDir()
+	store := newTestStore(t, dir)
+
+	epDir := filepath.Join(dir, "episode")
+	require.NoError(t, os.MkdirAll(epDir, 0o755))
+	md := `---
+title: "Session A"
+date: 2026-03-18
+expand_details: see transcript
+raw_references:
+  - chat_key=tg:1, date=2026-03-18, start_offset=0, end_offset=50
+---
+
+Summary only here.
+`
+	require.NoError(t, os.WriteFile(filepath.Join(epDir, "sess-a.md"), []byte(md), 0o644))
+
+	require.NoError(t, store.Reindex(dir))
+
+	got, err := store.Get("sess-a")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "Session A", got.Title)
+	assert.NotContains(t, got.Content, "---")
+	assert.Contains(t, got.Content, "Summary only here.")
+	assert.Contains(t, got.Content, "Expand for details: see transcript")
+	assert.Contains(t, got.Content, "> Raw Reference: chat_key=tg:1, date=2026-03-18, start_offset=0, end_offset=50")
+}
+
 func TestStore_Reindex_ClearsDeletedFiles(t *testing.T) {
 	dir := t.TempDir()
 	store := newTestStore(t, dir)

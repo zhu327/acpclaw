@@ -358,30 +358,54 @@ func parseMarkdownFile(id, category, content string) domain.MemoryEntry {
 	return entry
 }
 
+// closingYAMLDelimiter returns the index in content where the closing "---" of YAML front matter starts.
+// The opening delimiter must be at index 0.
+func closingYAMLDelimiter(content string) (at int, ok bool) {
+	if !strings.HasPrefix(content, "---") {
+		return 0, false
+	}
+	rel := strings.Index(content[3:], "---")
+	if rel < 0 {
+		return 0, false
+	}
+	return 3 + rel, true
+}
+
 // parseFrontmatter extracts title, date, tags and body from YAML frontmatter.
+// 同时解析 expand_details 和 raw_references 字段，并还原到 body 末尾以保持 DB 兼容性。
 func parseFrontmatter(content string) (title, date string, tags []string, body string) {
 	body = content
-	if !strings.HasPrefix(content, "---") {
+	closeAt, ok := closingYAMLDelimiter(content)
+	if !ok {
 		return
 	}
-	end := strings.Index(content[3:], "---")
-	if end < 0 {
-		return
-	}
-	front := content[3 : end+3]
-	body = strings.TrimSpace(content[end+6:])
+	front := content[3:closeAt]
+	body = strings.TrimSpace(content[closeAt+3:])
+
+	var expandDetails string
+	var rawRefLines []string
+	inRawRefs := false
 
 	for _, line := range strings.Split(front, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "title:") {
-			title = strings.TrimSpace(strings.TrimPrefix(line, "title:"))
+		trimmed := strings.TrimSpace(line)
+		if inRawRefs {
+			if strings.HasPrefix(trimmed, "- ") {
+				rawRefLines = append(rawRefLines, strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+				continue
+			}
+			if trimmed == "" {
+				continue
+			}
+			inRawRefs = false
+		}
+		if strings.HasPrefix(trimmed, "title:") {
+			title = strings.TrimSpace(strings.TrimPrefix(trimmed, "title:"))
 			title = strings.Trim(title, `"'`)
-		} else if strings.HasPrefix(line, "date:") {
-			date = strings.TrimSpace(strings.TrimPrefix(line, "date:"))
+		} else if strings.HasPrefix(trimmed, "date:") {
+			date = strings.TrimSpace(strings.TrimPrefix(trimmed, "date:"))
 			date = strings.Trim(date, `"'`)
-		} else if strings.HasPrefix(line, "tags:") {
-			raw := strings.TrimSpace(strings.TrimPrefix(line, "tags:"))
-			// Support both [a, b] and "a, b" formats
+		} else if strings.HasPrefix(trimmed, "tags:") {
+			raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "tags:"))
 			raw = strings.Trim(raw, "[]")
 			for _, t := range strings.Split(raw, ",") {
 				t = strings.TrimSpace(t)
@@ -390,8 +414,21 @@ func parseFrontmatter(content string) (title, date string, tags []string, body s
 					tags = append(tags, t)
 				}
 			}
+		} else if strings.HasPrefix(trimmed, "expand_details:") {
+			expandDetails = strings.TrimSpace(strings.TrimPrefix(trimmed, "expand_details:"))
+			expandDetails = strings.Trim(expandDetails, `"'`)
+		} else if trimmed == "raw_references:" {
+			inRawRefs = true
 		}
 	}
+
+	if expandDetails != "" {
+		body += "\n\nExpand for details: " + expandDetails
+	}
+	for _, ref := range rawRefLines {
+		body += "\n\n> Raw Reference: " + ref
+	}
+
 	return
 }
 
@@ -457,7 +494,13 @@ func bm25Tokenize(text string) []string {
 // bm25Score 计算单个文档相对查询词的 BM25 得分。
 // termFreq: 文档词频表，docLen: 文档长度，
 // avgDocLen: 所有文档平均长度，docCount: 文档总数，dfMap: 词→含该词的文档数。
-func bm25Score(queryTerms []string, termFreq map[string]int, docLen, avgDocLen float64, docCount int, dfMap map[string]int) float64 {
+func bm25Score(
+	queryTerms []string,
+	termFreq map[string]int,
+	docLen, avgDocLen float64,
+	docCount int,
+	dfMap map[string]int,
+) float64 {
 	var score float64
 	for _, term := range queryTerms {
 		tf := float64(termFreq[term])
