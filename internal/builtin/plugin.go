@@ -62,9 +62,15 @@ func (b *BuiltinPlugin) Init(fw domain.PluginContext) error {
 	b.buildAgentService()
 	b.resumeStore = commands.NewResumeChoicesStore()
 	b.executor = newPromptExecutor(b.sessionMgr, b.prompter, b.buildFirstPromptPrefix)
-	b.queue = newPromptQueueManager(b.cfg.Agent.PromptQueue.MaxQueued, context.Background(), func(ctx context.Context, j *promptJob) {
-		b.completePromptJob(ctx, j)
-	})
+	b.queue = newPromptQueueManager(
+		b.cfg.Agent.PromptQueue.MaxQueued,
+		idleReclaimDuration(b.cfg.Agent.PromptQueue),
+		nil,
+		context.Background(),
+		func(ctx context.Context, j *promptJob) {
+			b.completePromptJob(ctx, j)
+		},
+	)
 	b.buildMemoryService()
 	b.wireAgentCallbacks()
 	return nil
@@ -209,7 +215,7 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 		commands.NewNewCommand(b.sessionMgr, defaultWs, beforeSwitch),
 		commands.NewSessionCommand(b.sessionMgr),
 		commands.NewResumeCommand(b.sessionMgr, b.resumeStore),
-		commands.NewCancelCommand(b.prompter, b.drainPromptQueue),
+		commands.NewCancelCommand(b.cancelPromptQueueAndRunning),
 		commands.NewReconnectCommand(b.sessionMgr, defaultWs),
 		commands.NewStatusCommand(b.sessionMgr),
 		commands.NewModelCommand(b.modelMgr),
@@ -311,6 +317,7 @@ func (b *BuiltinPlugin) ExecuteAction(
 	if !b.queue.Submit(job) {
 		if tgchannel.IsBackgroundResponder(tc.Responder) {
 			logQueueFullRejected(tc.Chat, "cron")
+			return &domain.Result{SuppressOutbound: true}, nil
 		}
 		return &domain.Result{Text: promptQueueFullMessage}, nil
 	}
@@ -318,7 +325,13 @@ func (b *BuiltinPlugin) ExecuteAction(
 }
 
 func (b *BuiltinPlugin) completePromptJob(ctx context.Context, job *promptJob) {
-	result := b.executor.runPromptJob(ctx, job)
+	runCtx := ctx
+	var cancel context.CancelFunc
+	if sec := b.cfg.Agent.PromptQueue.JobTimeoutSeconds; sec > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, time.Duration(sec)*time.Second)
+		defer cancel()
+	}
+	result := b.executor.runPromptJob(runCtx, job)
 	if result != nil {
 		b.fw.RenderAndDispatch(ctx, result, job.tc.State, job.tc.Responder)
 	}
@@ -327,19 +340,29 @@ func (b *BuiltinPlugin) completePromptJob(ctx context.Context, job *promptJob) {
 	}
 }
 
-func (b *BuiltinPlugin) drainPromptQueue(chat domain.ChatRef) int {
-	if b.queue == nil {
-		return 0
+func (b *BuiltinPlugin) cancelPromptQueueAndRunning(ctx context.Context, chat domain.ChatRef) (int, error) {
+	if b.prompter == nil {
+		return 0, domain.ErrNoActiveSession
 	}
-	return b.queue.Drain(chat.CompositeKey())
+	if b.queue == nil {
+		return 0, b.prompter.Cancel(ctx, chat)
+	}
+	return b.queue.CancelAndDrain(chat.CompositeKey(), func() error {
+		return b.prompter.Cancel(ctx, chat)
+	})
 }
 
 // HandleBusySendNow implements domain.BusyHandler.
-func (b *BuiltinPlugin) HandleBusySendNow(chat domain.ChatRef, _ string) (bool, error) {
+func (b *BuiltinPlugin) HandleBusySendNow(chat domain.ChatRef, token string) (bool, error) {
 	if b.prompter == nil {
 		return false, nil
 	}
-	if err := b.prompter.Cancel(context.Background(), chat); err != nil {
+	if b.queue == nil || !b.queue.BusyTokenMatches(chat.CompositeKey(), token) {
+		return false, nil
+	}
+	cancelCtx, cancel := context.WithTimeout(context.Background(), prompterCancelTimeout)
+	defer cancel()
+	if err := b.prompter.Cancel(cancelCtx, chat); err != nil {
 		return false, err
 	}
 	return true, nil

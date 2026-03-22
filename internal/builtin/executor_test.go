@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,11 +43,13 @@ func (m *mockSessionManager) Shutdown() {}
 
 // mockPrompter implements domain.Prompter for tests.
 type mockPrompter struct {
-	mu       sync.Mutex
-	reply    *domain.AgentReply
-	err      error
-	captured domain.PromptInput
-	lastResp domain.Responder
+	mu                sync.Mutex
+	reply             *domain.AgentReply
+	err               error
+	captured          domain.PromptInput
+	lastResp          domain.Responder
+	blockUntilCtxDone bool
+	cancelCalled      int
 }
 
 func (m *mockPrompter) Prompt(
@@ -55,6 +58,10 @@ func (m *mockPrompter) Prompt(
 	input domain.PromptInput,
 	resp domain.Responder,
 ) (*domain.AgentReply, error) {
+	if m.blockUntilCtxDone {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	m.mu.Lock()
 	m.captured = input
 	m.lastResp = resp
@@ -64,6 +71,9 @@ func (m *mockPrompter) Prompt(
 }
 
 func (m *mockPrompter) Cancel(ctx context.Context, chat domain.ChatRef) error {
+	m.mu.Lock()
+	m.cancelCalled++
+	m.mu.Unlock()
 	return nil
 }
 
@@ -154,6 +164,26 @@ func TestRunPromptJob_Success(t *testing.T) {
 	assert.Empty(t, result.Text)
 	require.NotNil(t, result.Reply)
 	assert.Equal(t, "hello from agent", result.Reply.Text)
+}
+
+func TestRunPromptJob_Timeout(t *testing.T) {
+	sessionMgr := &mockSessionManager{activeSession: &domain.SessionInfo{}}
+	prompter := &mockPrompter{blockUntilCtxDone: true}
+	exec := newPromptExecutor(sessionMgr, prompter, nil)
+	action := domain.Action{Kind: domain.ActionPrompt, Input: domain.PromptInput{Text: "hi"}}
+	tc := makeTurnContext(testChat, action.Input, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	result := exec.runPromptJob(ctx, &promptJob{action: action, tc: tc})
+
+	require.NotNil(t, result)
+	assert.Equal(t, "⏱ Request timed out.", result.Text)
+	assert.Nil(t, result.Reply)
+	prompter.mu.Lock()
+	n := prompter.cancelCalled
+	prompter.mu.Unlock()
+	assert.GreaterOrEqual(t, n, 1)
 }
 
 func TestRunPromptJob_AgentError(t *testing.T) {

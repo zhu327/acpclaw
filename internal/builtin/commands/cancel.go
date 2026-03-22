@@ -11,13 +11,13 @@ import (
 
 // CancelCommand handles /cancel.
 type CancelCommand struct {
-	prompter domain.Prompter
-	drain    func(chat domain.ChatRef) int
+	cancelAndDrain func(ctx context.Context, chat domain.ChatRef) (drained int, err error)
 }
 
-// NewCancelCommand creates a CancelCommand. drain may be nil; it removes queued prompts not yet started.
-func NewCancelCommand(p domain.Prompter, drain func(chat domain.ChatRef) int) *CancelCommand {
-	return &CancelCommand{prompter: p, drain: drain}
+// NewCancelCommand creates a CancelCommand. cancelAndDrain atomically flags cancel, drains queued
+// prompts for the chat, then cancels the running agent prompt (if any). May be nil for tests.
+func NewCancelCommand(cancelAndDrain func(ctx context.Context, chat domain.ChatRef) (drained int, err error)) *CancelCommand {
+	return &CancelCommand{cancelAndDrain: cancelAndDrain}
 }
 
 func (c *CancelCommand) Name() string { return "cancel" }
@@ -27,10 +27,10 @@ func (c *CancelCommand) Description() string {
 
 func (c *CancelCommand) Execute(ctx context.Context, args []string, tc *domain.TurnContext) (*domain.Result, error) {
 	n := 0
-	if c.drain != nil {
-		n = c.drain(tc.Chat)
+	var err error
+	if c.cancelAndDrain != nil {
+		n, err = c.cancelAndDrain(ctx, tc.Chat)
 	}
-	err := c.prompter.Cancel(ctx, tc.Chat)
 	if err == nil {
 		if n > 0 {
 			return &domain.Result{Text: fmt.Sprintf("Cancelled the current operation and cleared %d queued message(s).", n)}, nil

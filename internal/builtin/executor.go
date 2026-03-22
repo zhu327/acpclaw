@@ -5,9 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/zhu327/acpclaw/internal/domain"
 )
+
+// prompterCancelTimeout bounds prompter.Cancel RPC when triggered from timeout or busy callback.
+const prompterCancelTimeout = 45 * time.Second
 
 // promptExecutor runs prompt jobs (prefix handling, single Prompt round per job).
 type promptExecutor struct {
@@ -37,6 +41,10 @@ func hasReplyContent(reply *domain.AgentReply) bool {
 
 func promptCancelled(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
+}
+
+func promptTimedOut(ctx context.Context, err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 func (e *promptExecutor) applyFirstTurnPrefix(
@@ -84,6 +92,14 @@ func (e *promptExecutor) runPromptJob(ctx context.Context, job *promptJob) *doma
 	if err != nil {
 		if promptCancelled(ctx, err) {
 			return &domain.Result{Text: "Request cancelled."}
+		}
+		if promptTimedOut(ctx, err) {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), prompterCancelTimeout)
+			defer cancel()
+			if cancelErr := e.prompter.Cancel(cancelCtx, job.tc.Chat); cancelErr != nil {
+				slog.Debug("prompter cancel after timeout", "chat", chatID, "error", cancelErr)
+			}
+			return &domain.Result{Text: "⏱ Request timed out."}
 		}
 		slog.Error("prompt failed", "chat", chatID, "error", err)
 		return &domain.Result{Text: "❌ Failed to process your request."}

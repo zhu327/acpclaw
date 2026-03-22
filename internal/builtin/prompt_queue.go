@@ -2,8 +2,13 @@ package builtin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"io"
 	"log/slog"
+	"runtime"
 	"sync"
+	"time"
 
 	"github.com/zhu327/acpclaw/internal/domain"
 )
@@ -15,45 +20,86 @@ type promptJob struct {
 }
 
 // promptQueueManager holds a bounded FIFO per chat for jobs not yet passed to Prompter.Prompt.
-// Each chat uses a slice guarded by mutex so Drain and Submit serialize correctly.
-// The chats map is not pruned when idle; long-running bots with many unique chats may grow memory (see monitoring if needed).
+// Idle workers exit and chat entries are removed from the map after idleTimeout with a reclaim handshake.
 type promptQueueManager struct {
-	maxQueued int
-	mu        sync.Mutex
-	chats     map[string]*chatQueue
-	parentCtx context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	run       func(context.Context, *promptJob)
+	maxQueued   int
+	idleTimeout time.Duration
+	now         func() time.Time
+	mu          sync.Mutex
+	chats       map[string]*chatQueue
+	parentCtx   context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	run         func(context.Context, *promptJob)
 }
 
 func newPromptQueueManager(
 	maxQueued int,
+	idleTimeout time.Duration,
+	now func() time.Time,
 	parentCtx context.Context,
 	run func(context.Context, *promptJob),
 ) *promptQueueManager {
+	if now == nil {
+		now = time.Now
+	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	return &promptQueueManager{
-		maxQueued: maxQueued,
-		chats:     make(map[string]*chatQueue),
-		parentCtx: ctx,
-		cancel:    cancel,
-		run:       run,
+		maxQueued:   maxQueued,
+		idleTimeout: idleTimeout,
+		now:         now,
+		chats:       make(map[string]*chatQueue),
+		parentCtx:   ctx,
+		cancel:      cancel,
+		run:         run,
 	}
 }
 
 type chatQueue struct {
-	mu      sync.Mutex
-	cond    *sync.Cond
-	pending []*promptJob
-	started bool
-	closed  bool
+	chatKey string
+
+	mu              sync.Mutex
+	cond            *sync.Cond
+	pending         []*promptJob
+	started         bool
+	closed          bool
+	idleSince       time.Time
+	reclaiming      bool
+	cancelRequested bool
+	runningToken    string
 }
 
-func newChatQueue() *chatQueue {
-	cq := &chatQueue{}
+func newChatQueue(chatKey string) *chatQueue {
+	cq := &chatQueue{chatKey: chatKey}
 	cq.cond = sync.NewCond(&cq.mu)
 	return cq
+}
+
+// randomRunningToken returns a 32-char hex token (16 random bytes). With "busy|" prefix fits Telegram 64-byte callback_data limit.
+func randomRunningToken() string {
+	var b [16]byte
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err := io.ReadFull(rand.Reader, b[:]); err == nil {
+			return hex.EncodeToString(b[:])
+		}
+	}
+	slog.Error("crypto/rand: failed to read running token entropy after retries")
+	panic("acpclaw: crypto/rand exhausted for running token")
+}
+
+// canceledChild returns a context that is already canceled so runPromptJob exits without calling the agent
+// (used when a queued job is dropped because /cancel won the race before Prompt started).
+func canceledChild(parent context.Context) context.Context {
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+	return ctx
+}
+
+// chatQueueFor returns the chat queue for key, or nil. Caller must not hold chatQueue.mu.
+func (m *promptQueueManager) chatQueueFor(key string) *chatQueue {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chats[key]
 }
 
 // Submit enqueues a job. Returns false if the queue is full or the manager is shutting down.
@@ -65,38 +111,42 @@ func (m *promptQueueManager) Submit(job *promptJob) bool {
 	}
 
 	key := job.tc.Chat.CompositeKey()
-	m.mu.Lock()
-	cq := m.chats[key]
-	if cq == nil {
-		cq = newChatQueue()
-		m.chats[key] = cq
-	}
-	m.mu.Unlock()
+	for {
+		m.mu.Lock()
+		cq := m.chats[key]
+		if cq == nil {
+			cq = newChatQueue(key)
+			m.chats[key] = cq
+		}
+		m.mu.Unlock()
 
-	if !cq.push(job, m.maxQueued) {
-		return false
-	}
-	m.ensureWorker(cq)
-	return true
-}
+		cq.mu.Lock()
+		if cq.reclaiming {
+			cq.mu.Unlock()
+			runtime.Gosched()
+			continue
+		}
+		if cq.closed {
+			cq.mu.Unlock()
+			return false
+		}
+		if len(cq.pending) >= m.maxQueued {
+			cq.mu.Unlock()
+			return false
+		}
+		cq.pending = append(cq.pending, job)
+		cq.idleSince = time.Time{}
+		cq.cond.Signal()
+		cq.mu.Unlock()
 
-func (cq *chatQueue) push(job *promptJob, max int) bool {
-	cq.mu.Lock()
-	defer cq.mu.Unlock()
-	if cq.closed {
-		return false
+		m.ensureWorker(cq)
+		return true
 	}
-	if len(cq.pending) >= max {
-		return false
-	}
-	cq.pending = append(cq.pending, job)
-	cq.cond.Signal()
-	return true
 }
 
 func (m *promptQueueManager) ensureWorker(cq *chatQueue) {
 	cq.mu.Lock()
-	if cq.started {
+	if cq.started || cq.closed {
 		cq.mu.Unlock()
 		return
 	}
@@ -111,42 +161,123 @@ func (m *promptQueueManager) workerLoop(cq *chatQueue) {
 	for {
 		cq.mu.Lock()
 		for len(cq.pending) == 0 && !cq.closed {
-			cq.cond.Wait()
+			if m.tryIdleReclaimLocked(cq) {
+				return
+			}
+			m.waitWithIdleTimeout(cq)
 		}
 		if cq.closed && len(cq.pending) == 0 {
 			cq.mu.Unlock()
 			return
 		}
+
 		job := cq.pending[0]
 		cq.pending = cq.pending[1:]
+
+		if cq.cancelRequested {
+			cq.cancelRequested = false
+			if len(cq.pending) == 0 {
+				cq.idleSince = m.now()
+			}
+			cq.mu.Unlock()
+			m.invokeRun(cq, canceledChild(m.parentCtx), job)
+			continue
+		}
+
+		cq.runningToken = randomRunningToken()
 		cq.mu.Unlock()
 
-		m.invokeRun(job)
+		m.invokeRun(cq, m.parentCtx, job)
 	}
 }
 
-func (m *promptQueueManager) invokeRun(job *promptJob) {
+// tryIdleReclaimLocked returns true if this worker should exit (reclaimed).
+// On entry cq.mu must be held. On return false, cq.mu is held again. On return true, cq.mu is not held.
+func (m *promptQueueManager) tryIdleReclaimLocked(cq *chatQueue) bool {
+	if m.idleTimeout <= 0 || cq.idleSince.IsZero() {
+		return false
+	}
+	if m.now().Sub(cq.idleSince) < m.idleTimeout {
+		return false
+	}
+	cq.reclaiming = true
+	key := cq.chatKey
+	cq.mu.Unlock()
+
+	m.mu.Lock()
+	ok := m.chats[key] == cq
+	if ok {
+		delete(m.chats, key)
+	}
+	m.mu.Unlock()
+
+	cq.mu.Lock()
+	cq.reclaiming = false
+	cq.started = false
+	cq.mu.Unlock()
+	// Always exit this worker after a reclaim attempt: either we removed this queue from the map,
+	// or another Submit replaced the map entry and this goroutine must not keep serving a dead queue.
+	return true
+}
+
+func (m *promptQueueManager) waitWithIdleTimeout(cq *chatQueue) {
+	if m.idleTimeout <= 0 || cq.idleSince.IsZero() {
+		cq.cond.Wait()
+		return
+	}
+	d := m.idleTimeout - m.now().Sub(cq.idleSince)
+	if d <= 0 {
+		return
+	}
+	timer := time.AfterFunc(d, func() { cq.cond.Broadcast() })
+	cq.cond.Wait()
+	timer.Stop()
+}
+
+func (m *promptQueueManager) invokeRun(cq *chatQueue, ctx context.Context, job *promptJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("prompt job panicked", "recover", r)
 		}
+		cq.mu.Lock()
+		cq.runningToken = ""
+		cq.cancelRequested = false
+		if len(cq.pending) == 0 && !cq.closed {
+			cq.idleSince = m.now()
+		}
+		cq.mu.Unlock()
 	}()
-	m.run(m.parentCtx, job)
+	m.run(ctx, job)
 }
 
-// Drain removes jobs not yet started for the chat. Returns how many were dropped.
-func (m *promptQueueManager) Drain(chatKey string) int {
-	m.mu.Lock()
-	cq := m.chats[chatKey]
-	m.mu.Unlock()
+// CancelAndDrain sets cancelRequested, drops queued jobs, then runs cancelRunning (e.g. prompter.Cancel).
+func (m *promptQueueManager) CancelAndDrain(chatKey string, cancelRunning func() error) (drained int, err error) {
+	cq := m.chatQueueFor(chatKey)
+	if cq != nil {
+		cq.mu.Lock()
+		cq.cancelRequested = true
+		drained = len(cq.pending)
+		cq.pending = nil
+		cq.cond.Broadcast()
+		cq.mu.Unlock()
+	}
+
+	err = cancelRunning()
+	return drained, err
+}
+
+// BusyTokenMatches reports whether token matches the running prompt token for this chat.
+func (m *promptQueueManager) BusyTokenMatches(chatKey, token string) bool {
+	if token == "" {
+		return false
+	}
+	cq := m.chatQueueFor(chatKey)
 	if cq == nil {
-		return 0
+		return false
 	}
 	cq.mu.Lock()
 	defer cq.mu.Unlock()
-	n := len(cq.pending)
-	cq.pending = nil
-	return n
+	return cq.runningToken != "" && cq.runningToken == token
 }
 
 // Shutdown signals workers to stop and waits for them.

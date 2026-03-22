@@ -143,7 +143,9 @@ func TestNewCommand_Failure(t *testing.T) {
 
 func TestCancelCommand_Success(t *testing.T) {
 	p := &mockPrompter{}
-	cmd := NewCancelCommand(p, nil)
+	cmd := NewCancelCommand(func(ctx context.Context, chat domain.ChatRef) (int, error) {
+		return 0, p.Cancel(ctx, chat)
+	})
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
 		State: domain.State{},
@@ -157,7 +159,9 @@ func TestCancelCommand_Success(t *testing.T) {
 
 func TestCancelCommand_NoSession(t *testing.T) {
 	p := &mockPrompter{cancelErr: domain.ErrNoActiveSession}
-	cmd := NewCancelCommand(p, nil)
+	cmd := NewCancelCommand(func(ctx context.Context, chat domain.ChatRef) (int, error) {
+		return 0, p.Cancel(ctx, chat)
+	})
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
 		State: domain.State{},
@@ -172,12 +176,10 @@ func TestCancelCommand_NoSession(t *testing.T) {
 
 func TestCancelCommand_WithDrain(t *testing.T) {
 	p := &mockPrompter{}
-	var drained int
-	drain := func(chat domain.ChatRef) int {
-		drained = 3
-		return drained
-	}
-	cmd := NewCancelCommand(p, drain)
+	cmd := NewCancelCommand(func(ctx context.Context, chat domain.ChatRef) (int, error) {
+		_ = p.Cancel(ctx, chat)
+		return 3, nil
+	})
 	tc := &domain.TurnContext{
 		Chat:  domain.ChatRef{ChannelKind: "test", ChatID: "1"},
 		State: domain.State{},
@@ -186,7 +188,6 @@ func TestCancelCommand_WithDrain(t *testing.T) {
 	result, err := cmd.Execute(context.Background(), nil, tc)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Equal(t, 3, drained)
 	assert.Contains(t, result.Text, "3")
 	assert.Contains(t, result.Text, "queued")
 }

@@ -15,9 +15,37 @@ func TestLoad_Defaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 30, cfg.Agent.ConnectTimeout)
 	assert.Equal(t, config.DefaultMaxQueued, cfg.Agent.PromptQueue.MaxQueued)
+	assert.Equal(t, config.DefaultPromptQueueIdleTimeoutSeconds, cfg.Agent.PromptQueue.IdleTimeoutSeconds)
+	assert.Equal(t, config.DefaultPromptQueueJobTimeoutSeconds, cfg.Agent.PromptQueue.JobTimeoutSeconds)
 	assert.Equal(t, "ask", cfg.Permissions.Mode)
 	assert.Equal(t, "info", cfg.Logging.Level)
 	assert.Equal(t, "text", cfg.Logging.Format)
+}
+
+func TestNormalizePromptQueue_JobTimeoutZeroDisables(t *testing.T) {
+	pq := config.PromptQueueConfig{MaxQueued: 5, IdleTimeoutSeconds: 300, JobTimeoutSeconds: 0}
+	cfg := &config.Config{
+		Telegram:    config.TelegramConfig{Enabled: true, Token: "t"},
+		Agent:       config.AgentConfig{Command: "x", PromptQueue: pq},
+		Permissions: config.PermissionsConfig{Mode: "ask"},
+	}
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, 0, cfg.Agent.PromptQueue.JobTimeoutSeconds)
+}
+
+func TestNormalizePromptQueue_IdleReclaimDisabledSentinel(t *testing.T) {
+	pq := config.PromptQueueConfig{
+		MaxQueued:          5,
+		IdleTimeoutSeconds: config.PromptQueueIdleReclaimDisabled,
+		JobTimeoutSeconds:  600,
+	}
+	cfg := &config.Config{
+		Telegram:    config.TelegramConfig{Enabled: true, Token: "t"},
+		Agent:       config.AgentConfig{Command: "x", PromptQueue: pq},
+		Permissions: config.PermissionsConfig{Mode: "ask"},
+	}
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, config.PromptQueueIdleReclaimDisabled, cfg.Agent.PromptQueue.IdleTimeoutSeconds)
 }
 
 func TestLoad_FromYAML(t *testing.T) {
