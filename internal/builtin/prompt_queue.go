@@ -236,11 +236,15 @@ func (m *promptQueueManager) invokeRun(cq *chatQueue, ctx context.Context, job *
 		}
 		cq.mu.Lock()
 		cq.runningToken = ""
+		cancel := cq.runningCancel
 		cq.runningCancel = nil
 		if len(cq.pending) == 0 && !cq.closed {
 			cq.idleSince = m.now()
 		}
 		cq.mu.Unlock()
+		if cancel != nil {
+			cancel() // detach child from parentCtx's children map; CancelFunc is idempotent (e.g. after CancelAndDrain)
+		}
 	}()
 	m.run(ctx, job)
 }
