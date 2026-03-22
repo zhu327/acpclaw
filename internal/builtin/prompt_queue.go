@@ -26,6 +26,7 @@ type promptQueueManager struct {
 	idleTimeout time.Duration
 	now         func() time.Time
 	mu          sync.Mutex
+	stopped     bool
 	chats       map[string]*chatQueue
 	parentCtx   context.Context
 	cancel      context.CancelFunc
@@ -58,15 +59,16 @@ func newPromptQueueManager(
 type chatQueue struct {
 	chatKey string
 
-	mu           sync.Mutex
-	cond         *sync.Cond
-	pending      []*promptJob
-	started      bool
-	closed       bool
-	idleSince    time.Time
-	reclaiming   bool
-	detached     bool
-	runningToken string
+	mu            sync.Mutex
+	cond          *sync.Cond
+	pending       []*promptJob
+	started       bool
+	closed        bool
+	idleSince     time.Time
+	reclaiming    bool
+	detached      bool
+	runningToken  string
+	runningCancel context.CancelFunc
 }
 
 func newChatQueue(chatKey string) *chatQueue {
@@ -105,6 +107,10 @@ func (m *promptQueueManager) Submit(job *promptJob) bool {
 	key := job.tc.Chat.CompositeKey()
 	for {
 		m.mu.Lock()
+		if m.stopped {
+			m.mu.Unlock()
+			return false
+		}
 		cq := m.chats[key]
 		if cq == nil {
 			cq = newChatQueue(key)
@@ -171,9 +177,11 @@ func (m *promptQueueManager) workerLoop(cq *chatQueue) {
 		cq.pending = cq.pending[1:]
 
 		cq.runningToken = randomRunningToken()
+		jobCtx, jobCancel := context.WithCancel(m.parentCtx)
+		cq.runningCancel = jobCancel
 		cq.mu.Unlock()
 
-		m.invokeRun(cq, m.parentCtx, job)
+		m.invokeRun(cq, jobCtx, job)
 	}
 }
 
@@ -228,6 +236,7 @@ func (m *promptQueueManager) invokeRun(cq *chatQueue, ctx context.Context, job *
 		}
 		cq.mu.Lock()
 		cq.runningToken = ""
+		cq.runningCancel = nil
 		if len(cq.pending) == 0 && !cq.closed {
 			cq.idleSince = m.now()
 		}
@@ -243,6 +252,9 @@ func (m *promptQueueManager) CancelAndDrain(chatKey string, cancelRunning func()
 		cq.mu.Lock()
 		drained = len(cq.pending)
 		cq.pending = nil
+		if cq.runningCancel != nil {
+			cq.runningCancel()
+		}
 		cq.cond.Broadcast()
 		cq.mu.Unlock()
 	}
@@ -268,6 +280,7 @@ func (m *promptQueueManager) BusyTokenMatches(chatKey, token string) bool {
 // Shutdown signals workers to stop and waits for them.
 func (m *promptQueueManager) Shutdown() {
 	m.mu.Lock()
+	m.stopped = true
 	for _, cq := range m.chats {
 		cq.mu.Lock()
 		cq.closed = true

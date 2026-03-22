@@ -91,7 +91,9 @@ func (e *promptExecutor) runPromptJob(ctx context.Context, job *promptJob) *doma
 	reply, err := e.prompter.Prompt(ctx, job.tc.Chat, input, job.tc.Responder)
 	if err != nil {
 		if promptCancelled(ctx, err) {
-			return &domain.Result{Text: "Request cancelled."}
+			// Request was cancelled via /cancel or context cancellation during shutdown.
+			// The /cancel command already provided a success reply to the user, so return nil silently.
+			return nil
 		}
 		if promptTimedOut(ctx, err) {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), prompterCancelTimeout)
