@@ -17,7 +17,7 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/mymmrac/telego"
 	"github.com/zhu327/acpclaw/internal/builtin/agent"
-	"github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
+	tgchannel "github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
 	"github.com/zhu327/acpclaw/internal/builtin/commands"
 	"github.com/zhu327/acpclaw/internal/builtin/memory"
 	"github.com/zhu327/acpclaw/internal/config"
@@ -26,6 +26,8 @@ import (
 	"github.com/zhu327/acpclaw/internal/templates"
 	"golang.org/x/net/proxy"
 )
+
+const promptQueueFullMessage = "⏳ The prompt queue is full. Try again in a moment or use /cancel to clear pending messages."
 
 // BuiltinPlugin provides the default implementation of all framework hooks.
 type BuiltinPlugin struct {
@@ -38,9 +40,10 @@ type BuiltinPlugin struct {
 	actObserver domain.ActivityObserver
 	modelMgr    domain.ModelManager
 	modeMgr     domain.ModeManager
-	tgChannel   *telegram.TelegramChannel
+	tgChannel   *tgchannel.TelegramChannel
 	resumeStore commands.ResumeChoicesStore
 	executor    *promptExecutor
+	queue       *promptQueueManager
 	memorySvc   *memory.Service
 	shutdownFn  func()
 }
@@ -59,6 +62,9 @@ func (b *BuiltinPlugin) Init(fw domain.PluginContext) error {
 	b.buildAgentService()
 	b.resumeStore = commands.NewResumeChoicesStore()
 	b.executor = newPromptExecutor(b.sessionMgr, b.prompter, b.buildFirstPromptPrefix)
+	b.queue = newPromptQueueManager(b.cfg.Agent.PromptQueue.MaxQueued, context.Background(), func(ctx context.Context, j *promptJob) {
+		b.completePromptJob(ctx, j)
+	})
 	b.buildMemoryService()
 	b.wireAgentCallbacks()
 	return nil
@@ -124,12 +130,21 @@ func (b *BuiltinPlugin) wireAgentCallbacks() {
 	b.actObserver.SetActivityHandler(b.handleActivityBlock)
 }
 
+func (b *BuiltinPlugin) responderForChat(chat domain.ChatRef) domain.Responder {
+	if src, ok := b.prompter.(domain.PromptResponderSource); ok {
+		if r := src.ActivePromptResponder(chat); r != nil {
+			return r
+		}
+	}
+	return b.fw.GetResponder(chat)
+}
+
 func (b *BuiltinPlugin) handlePermissionRequest(
 	chat domain.ChatRef,
 	req domain.PermissionRequest,
 ) <-chan domain.PermissionResponse {
 	ch := b.fw.RegisterPendingPermission(req.ID, chat)
-	if resp := b.fw.GetResponder(chat); resp != nil {
+	if resp := b.responderForChat(chat); resp != nil {
 		uiReq := domain.ChannelPermissionRequest{
 			ID:               req.ID,
 			Tool:             req.Tool,
@@ -144,7 +159,7 @@ func (b *BuiltinPlugin) handlePermissionRequest(
 }
 
 func (b *BuiltinPlugin) handleActivityBlock(chat domain.ChatRef, block domain.ActivityBlock) {
-	resp := b.fw.GetResponder(chat)
+	resp := b.responderForChat(chat)
 	if resp == nil {
 		return
 	}
@@ -194,7 +209,7 @@ func (b *BuiltinPlugin) Commands() []domain.Command {
 		commands.NewNewCommand(b.sessionMgr, defaultWs, beforeSwitch),
 		commands.NewSessionCommand(b.sessionMgr),
 		commands.NewResumeCommand(b.sessionMgr, b.resumeStore),
-		commands.NewCancelCommand(b.prompter),
+		commands.NewCancelCommand(b.prompter, b.drainPromptQueue),
 		commands.NewReconnectCommand(b.sessionMgr, defaultWs),
 		commands.NewStatusCommand(b.sessionMgr),
 		commands.NewModelCommand(b.modelMgr),
@@ -211,9 +226,13 @@ func (b *BuiltinPlugin) StartBackgroundTasks(ctx context.Context) {
 }
 
 // Shutdown stops the agent service and closes memory. Call on process exit.
+// Agent subprocesses are stopped first so in-flight Prompt calls return before queue workers are joined.
 func (b *BuiltinPlugin) Shutdown() {
 	if b.shutdownFn != nil {
 		b.shutdownFn()
+	}
+	if b.queue != nil {
+		b.queue.Shutdown()
 	}
 	if b.memorySvc != nil {
 		if err := b.memorySvc.Close(); err != nil {
@@ -288,16 +307,42 @@ func (b *BuiltinPlugin) ExecuteAction(
 	if b.prompter == nil {
 		return &domain.Result{Text: "Agent not configured."}, nil
 	}
-	result := b.executor.executePrompt(ctx, action, tc)
-	return result, nil
+	job := &promptJob{action: action, tc: tc}
+	if !b.queue.Submit(job) {
+		if tgchannel.IsBackgroundResponder(tc.Responder) {
+			logQueueFullRejected(tc.Chat, "cron")
+		}
+		return &domain.Result{Text: promptQueueFullMessage}, nil
+	}
+	return &domain.Result{SuppressOutbound: true}, nil
+}
+
+func (b *BuiltinPlugin) completePromptJob(ctx context.Context, job *promptJob) {
+	result := b.executor.runPromptJob(ctx, job)
+	if result != nil {
+		b.fw.RenderAndDispatch(ctx, result, job.tc.State, job.tc.Responder)
+	}
+	if err := b.SaveState(ctx, job.tc.SessionID, job.tc.State); err != nil {
+		slog.Warn("SaveState after prompt job", "error", err)
+	}
+}
+
+func (b *BuiltinPlugin) drainPromptQueue(chat domain.ChatRef) int {
+	if b.queue == nil {
+		return 0
+	}
+	return b.queue.Drain(chat.CompositeKey())
 }
 
 // HandleBusySendNow implements domain.BusyHandler.
-func (b *BuiltinPlugin) HandleBusySendNow(chat domain.ChatRef, token string) (bool, error) {
-	if b.executor == nil {
+func (b *BuiltinPlugin) HandleBusySendNow(chat domain.ChatRef, _ string) (bool, error) {
+	if b.prompter == nil {
 		return false, nil
 	}
-	return b.executor.HandleBusySendNow(chat, token)
+	if err := b.prompter.Cancel(context.Background(), chat); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // OnError implements domain.ErrorObserver.
@@ -575,10 +620,10 @@ func (b *BuiltinPlugin) buildTelegramChannel(
 	bot *telego.Bot,
 	updates <-chan telego.Update,
 	fw *framework.Framework,
-) *telegram.TelegramChannel {
+) *tgchannel.TelegramChannel {
 	ids := b.cfg.Telegram.AllowedUserIDs
 	names := b.cfg.Telegram.AllowedUsernames
-	allowlist := telegram.AllowlistConfig{AllowedUserIDs: ids, AllowedUsernames: names}
-	channelCfg := telegram.ChannelConfig{AllowedUserIDs: ids, AllowedUsernames: names}
-	return telegram.NewTelegramChannel(bot, updates, channelCfg, fw, telegram.NewAllowlistChecker(allowlist))
+	allowlist := tgchannel.AllowlistConfig{AllowedUserIDs: ids, AllowedUsernames: names}
+	channelCfg := tgchannel.ChannelConfig{AllowedUserIDs: ids, AllowedUsernames: names}
+	return tgchannel.NewTelegramChannel(bot, updates, channelCfg, fw, tgchannel.NewAllowlistChecker(allowlist))
 }

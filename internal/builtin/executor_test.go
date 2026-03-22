@@ -45,30 +45,19 @@ type mockPrompter struct {
 	mu       sync.Mutex
 	reply    *domain.AgentReply
 	err      error
-	blockCh  chan struct{} // when non-nil, Prompt blocks until closed
-	readyCh  chan struct{} // when non-nil, closed when Prompt is about to block
 	captured domain.PromptInput
+	lastResp domain.Responder
 }
 
 func (m *mockPrompter) Prompt(
 	ctx context.Context,
 	chat domain.ChatRef,
 	input domain.PromptInput,
+	resp domain.Responder,
 ) (*domain.AgentReply, error) {
 	m.mu.Lock()
 	m.captured = input
-	blockCh := m.blockCh
-	readyCh := m.readyCh
-	m.mu.Unlock()
-
-	if blockCh != nil {
-		if readyCh != nil {
-			close(readyCh)
-		}
-		<-blockCh
-	}
-
-	m.mu.Lock()
+	m.lastResp = resp
 	reply, err := m.reply, m.err
 	m.mu.Unlock()
 	return reply, err
@@ -90,13 +79,6 @@ func (m *mockPrompter) setError(err error) {
 	defer m.mu.Unlock()
 	m.reply = nil
 	m.err = err
-}
-
-func (m *mockPrompter) setBlocking(blockCh, readyCh chan struct{}) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.blockCh = blockCh
-	m.readyCh = readyCh
 }
 
 func (m *mockPrompter) getCaptured() domain.PromptInput {
@@ -153,7 +135,7 @@ func makeTurnContext(chat domain.ChatRef, input domain.PromptInput, resp domain.
 	}
 }
 
-func TestExecutePrompt_Success(t *testing.T) {
+func TestRunPromptJob_Success(t *testing.T) {
 	sessionMgr := &mockSessionManager{activeSession: &domain.SessionInfo{}}
 	prompter := &mockPrompter{}
 	prompter.setReply(&domain.AgentReply{Text: "hello from agent"})
@@ -166,16 +148,15 @@ func TestExecutePrompt_Success(t *testing.T) {
 	}
 	tc := makeTurnContext(testChat, action.Input, nil)
 
-	result := exec.executePrompt(context.Background(), action, tc)
+	result := exec.runPromptJob(context.Background(), &promptJob{action: action, tc: tc})
 
 	require.NotNil(t, result)
-	assert.False(t, result.SuppressOutbound)
 	assert.Empty(t, result.Text)
 	require.NotNil(t, result.Reply)
 	assert.Equal(t, "hello from agent", result.Reply.Text)
 }
 
-func TestExecutePrompt_AgentError(t *testing.T) {
+func TestRunPromptJob_AgentError(t *testing.T) {
 	sessionMgr := &mockSessionManager{activeSession: &domain.SessionInfo{}}
 	prompter := &mockPrompter{}
 	prompter.setError(errors.New("agent failed"))
@@ -188,58 +169,28 @@ func TestExecutePrompt_AgentError(t *testing.T) {
 	}
 	tc := makeTurnContext(testChat, action.Input, nil)
 
-	result := exec.executePrompt(context.Background(), action, tc)
+	result := exec.runPromptJob(context.Background(), &promptJob{action: action, tc: tc})
 
 	require.NotNil(t, result)
-	assert.False(t, result.SuppressOutbound)
 	assert.Equal(t, "❌ Failed to process your request.", result.Text)
 	assert.Nil(t, result.Reply)
 }
 
-func TestExecutePrompt_Busy(t *testing.T) {
+func TestRunPromptJob_PassesResponder(t *testing.T) {
 	sessionMgr := &mockSessionManager{activeSession: &domain.SessionInfo{}}
-	blockCh := make(chan struct{})
-	readyCh := make(chan struct{})
 	prompter := &mockPrompter{}
-	prompter.setReply(&domain.AgentReply{Text: "done"})
-	prompter.setBlocking(blockCh, readyCh)
+	prompter.setReply(&domain.AgentReply{Text: "ok"})
 
 	exec := newPromptExecutor(sessionMgr, prompter, nil)
+	r := &mockResponder{}
+	action := domain.Action{Kind: domain.ActionPrompt, Input: domain.PromptInput{Text: "x"}}
+	tc := makeTurnContext(testChat, action.Input, r)
 
-	action := domain.Action{
-		Kind:  domain.ActionPrompt,
-		Input: domain.PromptInput{Text: "hi"},
-	}
-	tc := makeTurnContext(testChat, action.Input, nil)
-
-	var firstDone sync.WaitGroup
-	firstDone.Add(1)
-	go func() {
-		defer firstDone.Done()
-		exec.executePrompt(context.Background(), action, tc)
-	}()
-
-	// Wait for first goroutine to acquire lock and block in Prompt
-	<-readyCh
-
-	var secondResult *domain.Result
-	var secondDone sync.WaitGroup
-	secondDone.Add(1)
-	go func() {
-		defer secondDone.Done()
-		secondResult = exec.executePrompt(context.Background(), action, tc)
-	}()
-
-	// Second call should return quickly with SuppressOutbound
-	secondDone.Wait()
-	require.NotNil(t, secondResult)
-	assert.True(t, secondResult.SuppressOutbound, "second call while first is running should suppress outbound")
-
-	close(blockCh)
-	firstDone.Wait()
+	_ = exec.runPromptJob(context.Background(), &promptJob{action: action, tc: tc})
+	assert.Equal(t, r, prompter.lastResp)
 }
 
-func TestExecutePrompt_FirstTurnPrefix(t *testing.T) {
+func TestRunPromptJob_FirstTurnPrefix(t *testing.T) {
 	sessionMgr := &mockSessionManager{activeSession: nil}
 	prompter := &mockPrompter{}
 	prompter.setReply(&domain.AgentReply{Text: "ok"})
@@ -260,7 +211,7 @@ func TestExecutePrompt_FirstTurnPrefix(t *testing.T) {
 	}
 	tc := makeTurnContext(testChat, action.Input, nil)
 
-	result := exec.executePrompt(context.Background(), action, tc)
+	result := exec.runPromptJob(context.Background(), &promptJob{action: action, tc: tc})
 
 	require.NotNil(t, result)
 	assert.True(t, prefixCalled, "firstPromptPrefix should be called when ActiveSession is nil")

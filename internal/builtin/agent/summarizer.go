@@ -27,7 +27,7 @@ var _ domain.Summarizer = (*AgentSummarizer)(nil)
 // Summarize generates a session summary.
 func (s *AgentSummarizer) Summarize(ctx context.Context, chat domain.ChatRef, transcript string) (string, error) {
 	prompt := buildSummarizePrompt(transcript)
-	reply, err := s.prompter.Prompt(ctx, chat, domain.PromptInput{Text: prompt})
+	reply, err := s.prompter.Prompt(ctx, chat, domain.PromptInput{Text: prompt}, nil)
 	if err != nil {
 		return "", fmt.Errorf("summarize prompt: %w", err)
 	}

@@ -166,7 +166,7 @@ func (f *Framework) ProcessInbound(
 	}
 
 	// 6. RenderOutbound + 7. DispatchOutbound
-	f.renderAndDispatch(ctx, result, state, resp)
+	f.RenderAndDispatch(ctx, result, state, resp)
 	return nil
 }
 
@@ -208,7 +208,8 @@ func defaultAction(msg domain.InboundMessage, actionResult any) domain.Action {
 	}
 }
 
-func (f *Framework) renderAndDispatch(
+// RenderAndDispatch implements domain.PluginContext.
+func (f *Framework) RenderAndDispatch(
 	ctx context.Context,
 	result *domain.Result,
 	state domain.State,

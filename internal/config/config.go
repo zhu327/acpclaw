@@ -41,12 +41,21 @@ type TelegramConfig struct {
 	Proxy string `yaml:"proxy"`
 }
 
+// DefaultMaxQueued is the default cap on prompts waiting behind the in-flight one per chat.
+const DefaultMaxQueued = 5
+
+// PromptQueueConfig bounds per-chat queued prompts (not yet started) behind the in-flight one.
+type PromptQueueConfig struct {
+	MaxQueued int `yaml:"max_queued"`
+}
+
 // AgentConfig holds ACP agent configuration.
 type AgentConfig struct {
-	Command        string `yaml:"command"`
-	Workspace      string `yaml:"workspace"`
-	ConnectTimeout int    `yaml:"connect_timeout"`
-	Model          string `yaml:"model"`
+	Command        string            `yaml:"command"`
+	Workspace      string            `yaml:"workspace"`
+	ConnectTimeout int               `yaml:"connect_timeout"`
+	Model          string            `yaml:"model"`
+	PromptQueue    PromptQueueConfig `yaml:"prompt_queue"`
 }
 
 // PermissionsConfig holds permission-related configuration.
@@ -76,6 +85,7 @@ func Load(path string) (*Config, error) {
 	if err := applyEnv(cfg); err != nil {
 		return nil, err
 	}
+	normalizePromptQueue(&cfg.Agent.PromptQueue)
 	return cfg, nil
 }
 
@@ -106,7 +116,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid permission event_output %q: must be stdout or off", c.Permissions.EventOutput)
 		}
 	}
+	normalizePromptQueue(&c.Agent.PromptQueue)
 	return nil
+}
+
+func normalizePromptQueue(p *PromptQueueConfig) {
+	if p.MaxQueued <= 0 {
+		p.MaxQueued = DefaultMaxQueued
+	}
 }
 
 func defaults() *Config {
@@ -114,6 +131,9 @@ func defaults() *Config {
 		Agent: AgentConfig{
 			Workspace:      ".",
 			ConnectTimeout: 30,
+			PromptQueue: PromptQueueConfig{
+				MaxQueued: DefaultMaxQueued,
+			},
 		},
 		Permissions: PermissionsConfig{
 			Mode:        "ask",
@@ -183,6 +203,11 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := getEnv("ACPCLAW_CRON_ENABLED"); v != "" {
 		cfg.Cron.Enabled = parseBoolEnv(v)
+	}
+	if v := getEnv("ACP_PROMPT_QUEUE_MAX_QUEUED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Agent.PromptQueue.MaxQueued = n
+		}
 	}
 	return nil
 }

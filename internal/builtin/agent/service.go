@@ -29,12 +29,13 @@ type ServiceConfig struct {
 }
 
 var (
-	_ domain.SessionManager    = (*AcpAgentService)(nil)
-	_ domain.Prompter          = (*AcpAgentService)(nil)
-	_ domain.PermissionHandler = (*AcpAgentService)(nil)
-	_ domain.ActivityObserver  = (*AcpAgentService)(nil)
-	_ domain.ModelManager      = (*AcpAgentService)(nil)
-	_ domain.ModeManager       = (*AcpAgentService)(nil)
+	_ domain.SessionManager        = (*AcpAgentService)(nil)
+	_ domain.Prompter              = (*AcpAgentService)(nil)
+	_ domain.PromptResponderSource = (*AcpAgentService)(nil)
+	_ domain.PermissionHandler     = (*AcpAgentService)(nil)
+	_ domain.ActivityObserver      = (*AcpAgentService)(nil)
+	_ domain.ModelManager          = (*AcpAgentService)(nil)
+	_ domain.ModeManager           = (*AcpAgentService)(nil)
 )
 
 // AcpAgentService manages ACP agent subprocesses per chat. Each chat maintains a long-lived
@@ -283,11 +284,24 @@ const acpStdioLimitErrPhrase = "chunk is longer than limit"
 // Fragile: relies on agent error message format. Replace with typed error once SDK exposes one.
 const sessionNotFoundPhrase = "not found"
 
+// ActivePromptResponder returns the Responder bound to the current in-flight Prompt, if any.
+func (s *AcpAgentService) ActivePromptResponder(chat domain.ChatRef) domain.Responder {
+	key := chat.CompositeKey()
+	s.mu.RLock()
+	live := s.liveByChat[key]
+	s.mu.RUnlock()
+	if live == nil {
+		return nil
+	}
+	return live.activePromptResponder()
+}
+
 // Prompt sends a prompt to the agent and returns the reply.
 func (s *AcpAgentService) Prompt(
 	ctx context.Context,
 	chat domain.ChatRef,
 	input domain.PromptInput,
+	resp domain.Responder,
 ) (*domain.AgentReply, error) {
 	key := chat.CompositeKey()
 	lock := s.promptLockFor(key)
@@ -303,6 +317,9 @@ func (s *AcpAgentService) Prompt(
 	if live == nil {
 		return nil, domain.ErrNoActiveSession
 	}
+
+	live.setPromptResponder(resp)
+	defer live.clearPromptResponder()
 
 	slog.Info("Prompt to ACP",
 		"chat", key,

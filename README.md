@@ -56,6 +56,8 @@ agent:
   workspace: "./workspace"          # default working directory for the agent
   connect_timeout: 30               # agent handshake timeout in seconds
   model: "your-model-id"            # model to use (passed to the agent)
+  prompt_queue:
+    max_queued: 5                   # max prompts waiting per chat (FIFO; full queue rejects with a hint)
 
 permissions:
   mode: "approve"                   # ask | approve | deny

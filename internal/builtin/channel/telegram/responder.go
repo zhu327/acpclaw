@@ -64,6 +64,12 @@ func NewBackgroundResponder(ctx context.Context, bot *telego.Bot, chatID int64) 
 	return &BackgroundResponder{ctx: ctx, bot: bot, chatID: chatID}
 }
 
+// IsBackgroundResponder reports whether r is a BackgroundResponder (e.g. cron-triggered sends).
+func IsBackgroundResponder(r domain.Responder) bool {
+	_, ok := r.(*BackgroundResponder)
+	return ok
+}
+
 // ChannelKind returns the channel kind.
 func (r *BackgroundResponder) ChannelKind() string { return "telegram" }
 

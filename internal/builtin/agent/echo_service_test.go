@@ -28,7 +28,7 @@ func TestEchoAgentService_Prompt_Echo(t *testing.T) {
 	svc := agent.NewEchoAgentService()
 	require.NoError(t, svc.NewSession(context.Background(), chat("1"), "/ws"))
 
-	reply, err := svc.Prompt(context.Background(), chat("1"), domain.PromptInput{Text: "hello"})
+	reply, err := svc.Prompt(context.Background(), chat("1"), domain.PromptInput{Text: "hello"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.Contains(t, reply.Text, "hello")
@@ -36,7 +36,7 @@ func TestEchoAgentService_Prompt_Echo(t *testing.T) {
 
 func TestEchoAgentService_Prompt_NoSession(t *testing.T) {
 	svc := agent.NewEchoAgentService()
-	reply, err := svc.Prompt(context.Background(), chat("999"), domain.PromptInput{Text: "hi"})
+	reply, err := svc.Prompt(context.Background(), chat("999"), domain.PromptInput{Text: "hi"}, nil)
 	assert.ErrorIs(t, err, domain.ErrNoActiveSession)
 	assert.Nil(t, reply)
 }
@@ -47,7 +47,7 @@ func TestEchoAgentService_AskPermission_NoHandler(t *testing.T) {
 	svc := agent.NewEchoAgentService()
 	require.NoError(t, svc.NewSession(context.Background(), chat("2"), "/ws"))
 
-	reply, err := svc.Prompt(context.Background(), chat("2"), domain.PromptInput{Text: "run [ask] please"})
+	reply, err := svc.Prompt(context.Background(), chat("2"), domain.PromptInput{Text: "run [ask] please"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.Contains(t, reply.Text, "run [ask] please")
@@ -68,7 +68,7 @@ func TestEchoAgentService_AskPermission_ThisTime(t *testing.T) {
 		return respCh
 	})
 
-	reply, err := svc.Prompt(context.Background(), chat("3"), domain.PromptInput{Text: "do [ask] now"})
+	reply, err := svc.Prompt(context.Background(), chat("3"), domain.PromptInput{Text: "do [ask] now"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 
@@ -93,7 +93,7 @@ func TestEchoAgentService_AskPermission_Always(t *testing.T) {
 		return ch
 	})
 
-	reply, err := svc.Prompt(context.Background(), chat("4"), domain.PromptInput{Text: "[ask]"})
+	reply, err := svc.Prompt(context.Background(), chat("4"), domain.PromptInput{Text: "[ask]"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.Contains(t, reply.Text, "decision=always")
@@ -110,7 +110,7 @@ func TestEchoAgentService_AskPermission_Deny(t *testing.T) {
 		return ch
 	})
 
-	reply, err := svc.Prompt(context.Background(), chat("5"), domain.PromptInput{Text: "[ask] sensitive"})
+	reply, err := svc.Prompt(context.Background(), chat("5"), domain.PromptInput{Text: "[ask] sensitive"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.Contains(t, reply.Text, "decision=deny")
@@ -131,7 +131,7 @@ func TestEchoAgentService_AskPermission_ChatRef(t *testing.T) {
 		return respCh
 	})
 
-	_, err := svc.Prompt(context.Background(), c, domain.PromptInput{Text: "[ask]"})
+	_, err := svc.Prompt(context.Background(), c, domain.PromptInput{Text: "[ask]"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, c, gotChat)
 }
@@ -150,7 +150,7 @@ func TestEchoAgentService_NoAsk_HandlerNotCalled(t *testing.T) {
 		return ch
 	})
 
-	reply, err := svc.Prompt(context.Background(), chat("6"), domain.PromptInput{Text: "just echo me"})
+	reply, err := svc.Prompt(context.Background(), chat("6"), domain.PromptInput{Text: "just echo me"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 	assert.False(t, called, "handler should not be called when [ask] is absent")

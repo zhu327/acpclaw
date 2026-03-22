@@ -11,12 +11,13 @@ import (
 )
 
 var (
-	_ domain.SessionManager    = (*EchoAgentService)(nil)
-	_ domain.Prompter          = (*EchoAgentService)(nil)
-	_ domain.PermissionHandler = (*EchoAgentService)(nil)
-	_ domain.ActivityObserver  = (*EchoAgentService)(nil)
-	_ domain.ModelManager      = (*EchoAgentService)(nil)
-	_ domain.ModeManager       = (*EchoAgentService)(nil)
+	_ domain.SessionManager        = (*EchoAgentService)(nil)
+	_ domain.Prompter              = (*EchoAgentService)(nil)
+	_ domain.PromptResponderSource = (*EchoAgentService)(nil)
+	_ domain.PermissionHandler     = (*EchoAgentService)(nil)
+	_ domain.ActivityObserver      = (*EchoAgentService)(nil)
+	_ domain.ModelManager          = (*EchoAgentService)(nil)
+	_ domain.ModeManager           = (*EchoAgentService)(nil)
 )
 
 // EchoAgentService is a minimal agent implementation for development and testing.
@@ -26,6 +27,9 @@ type EchoAgentService struct {
 	sessionHistory    map[string][]domain.SessionInfo
 	activityHandler   func(chat domain.ChatRef, block domain.ActivityBlock)
 	permissionHandler func(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse
+	promptRespMu      sync.Mutex
+	promptChatKey     string
+	promptResponder   domain.Responder
 }
 
 // NewEchoAgentService creates a new EchoAgentService.
@@ -70,14 +74,43 @@ func (e *EchoAgentService) ListSessions(_ context.Context, chat domain.ChatRef) 
 	return result, nil
 }
 
+// ActivePromptResponder returns the Responder for the in-flight echo Prompt.
+func (e *EchoAgentService) ActivePromptResponder(chat domain.ChatRef) domain.Responder {
+	key := chat.CompositeKey()
+	e.promptRespMu.Lock()
+	defer e.promptRespMu.Unlock()
+	if key != e.promptChatKey {
+		return nil
+	}
+	return e.promptResponder
+}
+
+func (e *EchoAgentService) setPromptResponderState(key string, r domain.Responder) {
+	e.promptRespMu.Lock()
+	e.promptChatKey = key
+	e.promptResponder = r
+	e.promptRespMu.Unlock()
+}
+
+func (e *EchoAgentService) clearPromptResponderState() {
+	e.promptRespMu.Lock()
+	e.promptChatKey = ""
+	e.promptResponder = nil
+	e.promptRespMu.Unlock()
+}
+
 // Prompt returns an AgentReply echoing the input.
 // When input contains "[ask]", trigger a permission request to simulate the ask flow.
 func (e *EchoAgentService) Prompt(
 	_ context.Context,
 	chat domain.ChatRef,
 	input domain.PromptInput,
+	resp domain.Responder,
 ) (*domain.AgentReply, error) {
 	key := chat.CompositeKey()
+	e.setPromptResponderState(key, resp)
+	defer e.clearPromptResponderState()
+
 	e.mu.RLock()
 	info, ok := e.sessions[key]
 	handler := e.permissionHandler
@@ -113,8 +146,8 @@ func (e *EchoAgentService) Prompt(
 			text += " [permission asked: no handler set]"
 		} else {
 			ch := handler(chat, req)
-			resp := <-ch
-			text += fmt.Sprintf(" [permission asked: decision=%s]", string(resp.Decision))
+			permResp := <-ch
+			text += fmt.Sprintf(" [permission asked: decision=%s]", string(permResp.Decision))
 		}
 	}
 

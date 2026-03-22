@@ -39,9 +39,16 @@ type SessionManager interface {
 }
 
 // Prompter handles agent prompt execution.
+// resp is the channel Responder for this prompt (activity, permissions). Nil if none.
 type Prompter interface {
-	Prompt(ctx context.Context, chat ChatRef, input PromptInput) (*AgentReply, error)
+	Prompt(ctx context.Context, chat ChatRef, input PromptInput, resp Responder) (*AgentReply, error)
 	Cancel(ctx context.Context, chat ChatRef) error
+}
+
+// PromptResponderSource is implemented by agents that bind a Responder for the in-flight Prompt
+// (used when the framework has no active turn, e.g. async queued jobs).
+type PromptResponderSource interface {
+	ActivePromptResponder(chat ChatRef) Responder
 }
 
 // ModelInfo holds information about an available model.

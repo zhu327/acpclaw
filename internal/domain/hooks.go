@@ -126,6 +126,7 @@ type ErrorObserver interface {
 type PluginContext interface {
 	GetResponder(chat ChatRef) Responder
 	RegisterPendingPermission(reqID string, chat ChatRef) chan PermissionResponse
+	RenderAndDispatch(ctx context.Context, result *Result, state State, resp Responder)
 }
 
 // PluginInitializer is implemented by plugins that need a reference to the

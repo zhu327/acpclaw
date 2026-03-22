@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -29,6 +30,26 @@ type liveSession struct {
 	supportsSessionList bool
 	models              *acpsdk.SessionModelState
 	modes               *acpsdk.SessionModeState
+	promptRespMu        sync.Mutex
+	promptResponder     domain.Responder // UI target for this in-flight Prompt (async-safe)
+}
+
+func (live *liveSession) setPromptResponder(r domain.Responder) {
+	live.promptRespMu.Lock()
+	live.promptResponder = r
+	live.promptRespMu.Unlock()
+}
+
+func (live *liveSession) clearPromptResponder() {
+	live.promptRespMu.Lock()
+	live.promptResponder = nil
+	live.promptRespMu.Unlock()
+}
+
+func (live *liveSession) activePromptResponder() domain.Responder {
+	live.promptRespMu.Lock()
+	defer live.promptRespMu.Unlock()
+	return live.promptResponder
 }
 
 // defaultAgentEnvAllowlist is the set of env var names passed to agent subprocesses

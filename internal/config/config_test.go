@@ -14,6 +14,7 @@ func TestLoad_Defaults(t *testing.T) {
 	cfg, err := config.Load("")
 	require.NoError(t, err)
 	assert.Equal(t, 30, cfg.Agent.ConnectTimeout)
+	assert.Equal(t, config.DefaultMaxQueued, cfg.Agent.PromptQueue.MaxQueued)
 	assert.Equal(t, "ask", cfg.Permissions.Mode)
 	assert.Equal(t, "info", cfg.Logging.Level)
 	assert.Equal(t, "text", cfg.Logging.Format)
