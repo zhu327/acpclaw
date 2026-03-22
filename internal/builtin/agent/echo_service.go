@@ -28,15 +28,15 @@ type EchoAgentService struct {
 	activityHandler   func(chat domain.ChatRef, block domain.ActivityBlock)
 	permissionHandler func(chat domain.ChatRef, req domain.PermissionRequest) <-chan domain.PermissionResponse
 	promptRespMu      sync.Mutex
-	promptChatKey     string
-	promptResponder   domain.Responder
+	promptResponders  map[string]domain.Responder
 }
 
 // NewEchoAgentService creates a new EchoAgentService.
 func NewEchoAgentService() *EchoAgentService {
 	return &EchoAgentService{
-		sessions:       make(map[string]domain.SessionInfo),
-		sessionHistory: make(map[string][]domain.SessionInfo),
+		sessions:         make(map[string]domain.SessionInfo),
+		sessionHistory:   make(map[string][]domain.SessionInfo),
+		promptResponders: make(map[string]domain.Responder),
 	}
 }
 
@@ -79,23 +79,18 @@ func (e *EchoAgentService) ActivePromptResponder(chat domain.ChatRef) domain.Res
 	key := chat.CompositeKey()
 	e.promptRespMu.Lock()
 	defer e.promptRespMu.Unlock()
-	if key != e.promptChatKey {
-		return nil
-	}
-	return e.promptResponder
+	return e.promptResponders[key]
 }
 
 func (e *EchoAgentService) setPromptResponderState(key string, r domain.Responder) {
 	e.promptRespMu.Lock()
-	e.promptChatKey = key
-	e.promptResponder = r
+	e.promptResponders[key] = r
 	e.promptRespMu.Unlock()
 }
 
-func (e *EchoAgentService) clearPromptResponderState() {
+func (e *EchoAgentService) clearPromptResponderState(key string) {
 	e.promptRespMu.Lock()
-	e.promptChatKey = ""
-	e.promptResponder = nil
+	delete(e.promptResponders, key)
 	e.promptRespMu.Unlock()
 }
 
@@ -109,7 +104,7 @@ func (e *EchoAgentService) Prompt(
 ) (*domain.AgentReply, error) {
 	key := chat.CompositeKey()
 	e.setPromptResponderState(key, resp)
-	defer e.clearPromptResponderState()
+	defer e.clearPromptResponderState(key)
 
 	e.mu.RLock()
 	info, ok := e.sessions[key]
@@ -185,6 +180,9 @@ func (e *EchoAgentService) Shutdown() {
 	defer e.mu.Unlock()
 	e.sessions = make(map[string]domain.SessionInfo)
 	e.sessionHistory = make(map[string][]domain.SessionInfo)
+	e.promptRespMu.Lock()
+	e.promptResponders = make(map[string]domain.Responder)
+	e.promptRespMu.Unlock()
 }
 
 // SetActivityHandler stores the handler.

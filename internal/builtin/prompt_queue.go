@@ -58,15 +58,15 @@ func newPromptQueueManager(
 type chatQueue struct {
 	chatKey string
 
-	mu              sync.Mutex
-	cond            *sync.Cond
-	pending         []*promptJob
-	started         bool
-	closed          bool
-	idleSince       time.Time
-	reclaiming      bool
-	cancelRequested bool
-	runningToken    string
+	mu           sync.Mutex
+	cond         *sync.Cond
+	pending      []*promptJob
+	started      bool
+	closed       bool
+	idleSince    time.Time
+	reclaiming   bool
+	detached     bool
+	runningToken string
 }
 
 func newChatQueue(chatKey string) *chatQueue {
@@ -85,14 +85,6 @@ func randomRunningToken() string {
 	}
 	slog.Error("crypto/rand: failed to read running token entropy after retries")
 	panic("acpclaw: crypto/rand exhausted for running token")
-}
-
-// canceledChild returns a context that is already canceled so runPromptJob exits without calling the agent
-// (used when a queued job is dropped because /cancel won the race before Prompt started).
-func canceledChild(parent context.Context) context.Context {
-	ctx, cancel := context.WithCancel(parent)
-	cancel()
-	return ctx
 }
 
 // chatQueueFor returns the chat queue for key, or nil. Caller must not hold chatQueue.mu.
@@ -124,6 +116,10 @@ func (m *promptQueueManager) Submit(job *promptJob) bool {
 		if cq.reclaiming {
 			cq.mu.Unlock()
 			runtime.Gosched()
+			continue
+		}
+		if cq.detached {
+			cq.mu.Unlock()
 			continue
 		}
 		if cq.closed {
@@ -174,16 +170,6 @@ func (m *promptQueueManager) workerLoop(cq *chatQueue) {
 		job := cq.pending[0]
 		cq.pending = cq.pending[1:]
 
-		if cq.cancelRequested {
-			cq.cancelRequested = false
-			if len(cq.pending) == 0 {
-				cq.idleSince = m.now()
-			}
-			cq.mu.Unlock()
-			m.invokeRun(cq, canceledChild(m.parentCtx), job)
-			continue
-		}
-
 		cq.runningToken = randomRunningToken()
 		cq.mu.Unlock()
 
@@ -213,6 +199,7 @@ func (m *promptQueueManager) tryIdleReclaimLocked(cq *chatQueue) bool {
 
 	cq.mu.Lock()
 	cq.reclaiming = false
+	cq.detached = true
 	cq.started = false
 	cq.mu.Unlock()
 	// Always exit this worker after a reclaim attempt: either we removed this queue from the map,
@@ -241,7 +228,6 @@ func (m *promptQueueManager) invokeRun(cq *chatQueue, ctx context.Context, job *
 		}
 		cq.mu.Lock()
 		cq.runningToken = ""
-		cq.cancelRequested = false
 		if len(cq.pending) == 0 && !cq.closed {
 			cq.idleSince = m.now()
 		}
@@ -250,12 +236,11 @@ func (m *promptQueueManager) invokeRun(cq *chatQueue, ctx context.Context, job *
 	m.run(ctx, job)
 }
 
-// CancelAndDrain sets cancelRequested, drops queued jobs, then runs cancelRunning (e.g. prompter.Cancel).
+// CancelAndDrain drops queued jobs, then runs cancelRunning (e.g. prompter.Cancel).
 func (m *promptQueueManager) CancelAndDrain(chatKey string, cancelRunning func() error) (drained int, err error) {
 	cq := m.chatQueueFor(chatKey)
 	if cq != nil {
 		cq.mu.Lock()
-		cq.cancelRequested = true
 		drained = len(cq.pending)
 		cq.pending = nil
 		cq.cond.Broadcast()
