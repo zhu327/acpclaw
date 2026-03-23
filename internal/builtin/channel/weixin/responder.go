@@ -18,15 +18,17 @@ func (sharedResponderNoOps) ShowBusyNotification(string, int) (int, error)      
 func (sharedResponderNoOps) ClearBusyNotification(int) error                        { return nil }
 func (sharedResponderNoOps) ShowResumeKeyboard([]domain.SessionChoice) error        { return nil }
 
-// activityAccumulatorLimit 限制活动累加器文本长度（rune 数），为 MaxMessageTextRunes 留余量。
+// activityAccumulatorLimit 限制单条活动摘要消息长度（rune 数），为 MaxMessageTextRunes 留余量。
 const activityAccumulatorLimit = 1800
 
 // WeixinResponder implements domain.Responder for WeChat.
 // ctx 来自 SDK 的消息处理回调，responder 生命周期不应超过该 context。
 //
-// 活动消息采用流式累加器模式（参考 Telegram 的 EditMessage 方案）：
-// 多个 activity 块累加为一条 GENERATING 消息，最终回复时用 FINISH 终结，
+// 活动消息采用静默累加模式（参考 Telegram 的 EditMessage 方案）：
+// 处理期间在内存中累加 activity 行，Reply 时一次性发送合并的活动摘要，
 // 避免每个 activity 都发送独立消息导致对话刷屏。
+// 不使用 GENERATING state，因为微信客户端仅渲染同一 client_id 的首条 GENERATING，
+// 后续更新不生效。
 type WeixinResponder struct {
 	sharedResponderNoOps
 
@@ -34,9 +36,9 @@ type WeixinResponder struct {
 	bot *weixinbot.Bot
 	msg *weixinbot.IncomingMessage
 
-	mu           sync.Mutex
-	streamCID    string // 活动流的 client_id，用于 GENERATING → FINISH 序列
-	activityText string // 累加的活动文本
+	mu             sync.Mutex
+	activityChunks []string // 累加的活动摘要分段（每段不超过 activityAccumulatorLimit）
+	currentChunk   string   // 当前正在累加的分段
 }
 
 var _ domain.Responder = (*WeixinResponder)(nil)
@@ -50,16 +52,26 @@ func NewWeixinResponder(ctx context.Context, bot *weixinbot.Bot, msg *weixinbot.
 func (r *WeixinResponder) ChannelKind() string { return "weixin" }
 
 // Reply sends an outbound message to the user using SendRawMessage (Method B).
-// 先终结活动流（GENERATING → FINISH），再逐段发送正文，最后清除 typing。
+// 先发送累加的活动摘要，再逐段发送正文，最后清除 typing。
 func (r *WeixinResponder) Reply(msg domain.OutboundMessage) error {
 	if msg.Text == "" {
 		return nil
 	}
 	r.mu.Lock()
-	r.finishActivityStreamLocked()
+	r.flushActivityLocked()
+	activityChunks := r.activityChunks
+	r.activityChunks = nil
 	r.mu.Unlock()
 
 	ct := r.msg.ContextToken()
+
+	for _, text := range activityChunks {
+		cid, _ := weixinbot.GenerateClientID()
+		if err := r.bot.SendRawMessage(r.ctx, r.msg.UserID, text, ct, cid, weixinbot.MessageStateFinish); err != nil {
+			return err
+		}
+	}
+
 	for _, chunk := range chunkRunes(msg.Text, weixinbot.MaxMessageTextRunes) {
 		cid, _ := weixinbot.GenerateClientID()
 		if err := r.bot.SendRawMessage(r.ctx, r.msg.UserID, chunk, ct, cid, weixinbot.MessageStateFinish); err != nil {
@@ -81,10 +93,9 @@ func (r *WeixinResponder) ShowTypingIndicator() error {
 	return err
 }
 
-// SendActivity sends an agent activity block using the streaming accumulator.
-// 多个 activity 累加为一条 GENERATING 消息（参考 Telegram 的 EditMessage 模式），
-// 避免每个 tool call / thinking 都发送独立消息导致刷屏。
-// 累加文本超限时，先 FINISH 当前流再开启新流。
+// SendActivity accumulates an agent activity block into the in-memory buffer.
+// 处理期间不发送任何消息（typing 已提供实时反馈），Reply 时一次性发送合并的活动摘要。
+// 当累加文本超过 activityAccumulatorLimit 时自动分段。
 func (r *WeixinResponder) SendActivity(block domain.ActivityBlock) error {
 	line := block.FormatActivityText()
 	if line == "" {
@@ -94,37 +105,25 @@ func (r *WeixinResponder) SendActivity(block domain.ActivityBlock) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.activityText == "" {
-		r.activityText = line
-	} else if runeCount(r.activityText)+runeCount(line)+1 > activityAccumulatorLimit {
-		r.finishActivityStreamLocked()
-		r.activityText = line
+	if r.currentChunk == "" {
+		r.currentChunk = line
+	} else if runeCount(r.currentChunk)+runeCount(line)+1 > activityAccumulatorLimit {
+		r.flushActivityLocked()
+		r.currentChunk = line
 	} else {
-		r.activityText += "\n" + line
+		r.currentChunk += "\n" + line
 	}
-
-	if r.streamCID == "" {
-		cid, _ := weixinbot.GenerateClientID()
-		r.streamCID = cid
-	}
-
-	ct := r.msg.ContextToken()
-	_ = r.bot.SendRawMessage(r.ctx, r.msg.UserID, r.activityText, ct, r.streamCID, weixinbot.MessageStateGenerating)
 	return nil
 }
 
-// finishActivityStreamLocked 终结当前活动流，将 GENERATING 切换为 FINISH。
+// flushActivityLocked 将当前累加分段存入 activityChunks 列表。
 // 调用方必须持有 r.mu。
-func (r *WeixinResponder) finishActivityStreamLocked() {
-	if r.streamCID == "" {
+func (r *WeixinResponder) flushActivityLocked() {
+	if r.currentChunk == "" {
 		return
 	}
-	if r.activityText != "" {
-		ct := r.msg.ContextToken()
-		_ = r.bot.SendRawMessage(r.ctx, r.msg.UserID, r.activityText, ct, r.streamCID, weixinbot.MessageStateFinish)
-	}
-	r.streamCID = ""
-	r.activityText = ""
+	r.activityChunks = append(r.activityChunks, r.currentChunk)
+	r.currentChunk = ""
 }
 
 // BackgroundResponder implements domain.Responder for background tasks (e.g. cron).
