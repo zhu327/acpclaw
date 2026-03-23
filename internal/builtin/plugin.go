@@ -278,7 +278,17 @@ func (b *BuiltinPlugin) ResolveSession(ctx context.Context, msg domain.InboundMe
 	if info := b.sessionMgr.ActiveSession(msg.ChatRef); info != nil {
 		return info.SessionID, nil
 	}
-	if err := b.sessionMgr.NewSession(ctx, msg.ChatRef, b.defaultWorkspace()); err != nil {
+	// Agent process lifecycle (spawn + initialize + new_session) must not be bounded
+	// by the inbound message context, which may carry a short ACK deadline (e.g. WPS
+	// event SDK). Use a background context with ConnectTimeout so a cold-start agent
+	// does not fail with "context deadline exceeded" on the first message.
+	connectTimeout := time.Duration(b.cfg.Agent.ConnectTimeout) * time.Second
+	if connectTimeout <= 0 {
+		connectTimeout = 30 * time.Second
+	}
+	spawnCtx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	if err := b.sessionMgr.NewSession(spawnCtx, msg.ChatRef, b.defaultWorkspace()); err != nil {
 		return "", err
 	}
 	if info := b.sessionMgr.ActiveSession(msg.ChatRef); info != nil {
