@@ -64,11 +64,6 @@ agent:
   model: "your-model-id"            # model to use (passed to the agent)
   prompt_queue:
     max_queued: 5                   # max prompts waiting per chat (FIFO; full queue rejects with a hint)
-    # Idle worker reclaim: after the queue stays empty this long, the per-chat worker exits (frees map entry + goroutine).
-    # Use -1 to disable reclaim (workers never exit; map can grow with many chats — not recommended for public bots).
-    idle_timeout_seconds: 300
-    # Per-prompt wall time; 0 disables. On deadline, acpclaw calls prompter.Cancel once; the agent must honor context/cancel.
-    job_timeout_seconds: 600
 
 permissions:
   mode: "approve"                   # ask | approve | deny

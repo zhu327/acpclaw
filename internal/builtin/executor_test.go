@@ -178,12 +178,8 @@ func TestRunPromptJob_Timeout(t *testing.T) {
 	result := exec.runPromptJob(ctx, &promptJob{action: action, tc: tc})
 
 	require.NotNil(t, result)
-	assert.Equal(t, "⏱ Request timed out.", result.Text)
+	assert.Equal(t, "❌ Failed to process your request.", result.Text)
 	assert.Nil(t, result.Reply)
-	prompter.mu.Lock()
-	n := prompter.cancelCalled
-	prompter.mu.Unlock()
-	assert.GreaterOrEqual(t, n, 1)
 }
 
 func TestRunPromptJob_AgentError(t *testing.T) {

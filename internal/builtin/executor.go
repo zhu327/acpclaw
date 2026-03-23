@@ -43,10 +43,6 @@ func promptCancelled(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
 }
 
-func promptTimedOut(ctx context.Context, err error) bool {
-	return errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
-}
-
 func (e *promptExecutor) applyFirstTurnPrefix(
 	input domain.PromptInput,
 	chat domain.ChatRef,
@@ -94,14 +90,6 @@ func (e *promptExecutor) runPromptJob(ctx context.Context, job *promptJob) *doma
 			// Request was cancelled via /cancel or context cancellation during shutdown.
 			// The /cancel command already provided a success reply to the user, so return nil silently.
 			return nil
-		}
-		if promptTimedOut(ctx, err) {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), prompterCancelTimeout)
-			defer cancel()
-			if cancelErr := e.prompter.Cancel(cancelCtx, job.tc.Chat); cancelErr != nil {
-				slog.Debug("prompter cancel after timeout", "chat", chatID, "error", cancelErr)
-			}
-			return &domain.Result{Text: "⏱ Request timed out."}
 		}
 		slog.Error("prompt failed", "chat", chatID, "error", err)
 		return &domain.Result{Text: "❌ Failed to process your request."}

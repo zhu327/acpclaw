@@ -6,9 +6,7 @@ import (
 	"encoding/hex"
 	"io"
 	"log/slog"
-	"runtime"
 	"sync"
-	"time"
 
 	"github.com/zhu327/acpclaw/internal/domain"
 )
@@ -20,39 +18,29 @@ type promptJob struct {
 }
 
 // promptQueueManager holds a bounded FIFO per chat for jobs not yet passed to Prompter.Prompt.
-// Idle workers exit and chat entries are removed from the map after idleTimeout with a reclaim handshake.
 type promptQueueManager struct {
-	maxQueued   int
-	idleTimeout time.Duration
-	now         func() time.Time
-	mu          sync.Mutex
-	stopped     bool
-	chats       map[string]*chatQueue
-	parentCtx   context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	run         func(context.Context, *promptJob)
+	maxQueued int
+	mu        sync.Mutex
+	stopped   bool
+	chats     map[string]*chatQueue
+	parentCtx context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	run       func(context.Context, *promptJob)
 }
 
 func newPromptQueueManager(
 	maxQueued int,
-	idleTimeout time.Duration,
-	now func() time.Time,
 	parentCtx context.Context,
 	run func(context.Context, *promptJob),
 ) *promptQueueManager {
-	if now == nil {
-		now = time.Now
-	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	return &promptQueueManager{
-		maxQueued:   maxQueued,
-		idleTimeout: idleTimeout,
-		now:         now,
-		chats:       make(map[string]*chatQueue),
-		parentCtx:   ctx,
-		cancel:      cancel,
-		run:         run,
+		maxQueued: maxQueued,
+		chats:     make(map[string]*chatQueue),
+		parentCtx: ctx,
+		cancel:    cancel,
+		run:       run,
 	}
 }
 
@@ -64,9 +52,6 @@ type chatQueue struct {
 	pending       []*promptJob
 	started       bool
 	closed        bool
-	idleSince     time.Time
-	reclaiming    bool
-	detached      bool
 	runningToken  string
 	runningCancel context.CancelFunc
 }
@@ -96,6 +81,46 @@ func (m *promptQueueManager) chatQueueFor(key string) *chatQueue {
 	return m.chats[key]
 }
 
+// submitEnqueueOutcome is the result of attempting to append one job under cq.mu.
+type submitEnqueueOutcome int
+
+const (
+	submitEnqueueRejected submitEnqueueOutcome = iota
+	submitEnqueueOK
+)
+
+// lookupOrCreateQueue returns the chat queue for key, creating it if needed. Returns nil if the manager is stopped.
+func (m *promptQueueManager) lookupOrCreateQueue(key string) *chatQueue {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopped {
+		return nil
+	}
+	cq := m.chats[key]
+	if cq == nil {
+		cq = newChatQueue(key)
+		m.chats[key] = cq
+	}
+	return cq
+}
+
+// tryEnqueueOnChatQueue appends job to cq if allowed. Caller must not hold m.mu.
+func (m *promptQueueManager) tryEnqueueOnChatQueue(cq *chatQueue, job *promptJob) submitEnqueueOutcome {
+	cq.mu.Lock()
+	if cq.closed {
+		cq.mu.Unlock()
+		return submitEnqueueRejected
+	}
+	if len(cq.pending) >= m.maxQueued {
+		cq.mu.Unlock()
+		return submitEnqueueRejected
+	}
+	cq.pending = append(cq.pending, job)
+	cq.cond.Signal()
+	cq.mu.Unlock()
+	return submitEnqueueOK
+}
+
 // Submit enqueues a job. Returns false if the queue is full or the manager is shutting down.
 func (m *promptQueueManager) Submit(job *promptJob) bool {
 	select {
@@ -105,45 +130,18 @@ func (m *promptQueueManager) Submit(job *promptJob) bool {
 	}
 
 	key := job.tc.Chat.CompositeKey()
-	for {
-		m.mu.Lock()
-		if m.stopped {
-			m.mu.Unlock()
-			return false
-		}
-		cq := m.chats[key]
-		if cq == nil {
-			cq = newChatQueue(key)
-			m.chats[key] = cq
-		}
-		m.mu.Unlock()
-
-		cq.mu.Lock()
-		if cq.reclaiming {
-			cq.mu.Unlock()
-			runtime.Gosched()
-			continue
-		}
-		if cq.detached {
-			cq.mu.Unlock()
-			continue
-		}
-		if cq.closed {
-			cq.mu.Unlock()
-			return false
-		}
-		if len(cq.pending) >= m.maxQueued {
-			cq.mu.Unlock()
-			return false
-		}
-		cq.pending = append(cq.pending, job)
-		cq.idleSince = time.Time{}
-		cq.cond.Signal()
-		cq.mu.Unlock()
-
+	cq := m.lookupOrCreateQueue(key)
+	if cq == nil {
+		return false
+	}
+	switch m.tryEnqueueOnChatQueue(cq, job) {
+	case submitEnqueueRejected:
+		return false
+	case submitEnqueueOK:
 		m.ensureWorker(cq)
 		return true
 	}
+	return false
 }
 
 func (m *promptQueueManager) ensureWorker(cq *chatQueue) {
@@ -163,10 +161,7 @@ func (m *promptQueueManager) workerLoop(cq *chatQueue) {
 	for {
 		cq.mu.Lock()
 		for len(cq.pending) == 0 && !cq.closed {
-			if m.tryIdleReclaimLocked(cq) {
-				return
-			}
-			m.waitWithIdleTimeout(cq)
+			cq.cond.Wait()
 		}
 		if cq.closed && len(cq.pending) == 0 {
 			cq.mu.Unlock()
@@ -185,50 +180,6 @@ func (m *promptQueueManager) workerLoop(cq *chatQueue) {
 	}
 }
 
-// tryIdleReclaimLocked returns true if this worker should exit (reclaimed).
-// On entry cq.mu must be held. On return false, cq.mu is held again. On return true, cq.mu is not held.
-func (m *promptQueueManager) tryIdleReclaimLocked(cq *chatQueue) bool {
-	if m.idleTimeout <= 0 || cq.idleSince.IsZero() {
-		return false
-	}
-	if m.now().Sub(cq.idleSince) < m.idleTimeout {
-		return false
-	}
-	cq.reclaiming = true
-	key := cq.chatKey
-	cq.mu.Unlock()
-
-	m.mu.Lock()
-	ok := m.chats[key] == cq
-	if ok {
-		delete(m.chats, key)
-	}
-	m.mu.Unlock()
-
-	cq.mu.Lock()
-	cq.reclaiming = false
-	cq.detached = true
-	cq.started = false
-	cq.mu.Unlock()
-	// Always exit this worker after a reclaim attempt: either we removed this queue from the map,
-	// or another Submit replaced the map entry and this goroutine must not keep serving a dead queue.
-	return true
-}
-
-func (m *promptQueueManager) waitWithIdleTimeout(cq *chatQueue) {
-	if m.idleTimeout <= 0 || cq.idleSince.IsZero() {
-		cq.cond.Wait()
-		return
-	}
-	d := m.idleTimeout - m.now().Sub(cq.idleSince)
-	if d <= 0 {
-		return
-	}
-	timer := time.AfterFunc(d, func() { cq.cond.Broadcast() })
-	cq.cond.Wait()
-	timer.Stop()
-}
-
 func (m *promptQueueManager) invokeRun(cq *chatQueue, ctx context.Context, job *promptJob) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -238,9 +189,6 @@ func (m *promptQueueManager) invokeRun(cq *chatQueue, ctx context.Context, job *
 		cq.runningToken = ""
 		cancel := cq.runningCancel
 		cq.runningCancel = nil
-		if len(cq.pending) == 0 && !cq.closed {
-			cq.idleSince = m.now()
-		}
 		cq.mu.Unlock()
 		if cancel != nil {
 			cancel() // detach child from parentCtx's children map; CancelFunc is idempotent (e.g. after CancelAndDrain)

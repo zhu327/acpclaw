@@ -51,21 +51,9 @@ type WeixinConfig struct {
 // DefaultMaxQueued is the default cap on prompts waiting behind the in-flight one per chat.
 const DefaultMaxQueued = 5
 
-// DefaultPromptQueueIdleTimeoutSeconds is the default idle time before a per-chat queue worker exits.
-const DefaultPromptQueueIdleTimeoutSeconds = 300
-
-// DefaultPromptQueueJobTimeoutSeconds is the default max wall time for one prompt job (0 in YAML disables).
-const DefaultPromptQueueJobTimeoutSeconds = 600
-
-// PromptQueueIdleReclaimDisabled is a sentinel for idle_timeout_seconds: do not reclaim idle per-chat workers
-// (memory for chats map may grow; use only if you accept that tradeoff).
-const PromptQueueIdleReclaimDisabled = -1
-
 // PromptQueueConfig bounds per-chat queued prompts (not yet started) behind the in-flight one.
 type PromptQueueConfig struct {
-	MaxQueued          int `yaml:"max_queued"`
-	IdleTimeoutSeconds int `yaml:"idle_timeout_seconds"`
-	JobTimeoutSeconds  int `yaml:"job_timeout_seconds"`
+	MaxQueued int `yaml:"max_queued"`
 }
 
 // AgentConfig holds ACP agent configuration.
@@ -143,18 +131,6 @@ func normalizePromptQueue(p *PromptQueueConfig) {
 	if p.MaxQueued <= 0 {
 		p.MaxQueued = DefaultMaxQueued
 	}
-	switch {
-	case p.IdleTimeoutSeconds < PromptQueueIdleReclaimDisabled:
-		p.IdleTimeoutSeconds = DefaultPromptQueueIdleTimeoutSeconds
-	case p.IdleTimeoutSeconds == PromptQueueIdleReclaimDisabled:
-		// keep -1: disable idle worker reclaim
-	case p.IdleTimeoutSeconds <= 0:
-		p.IdleTimeoutSeconds = DefaultPromptQueueIdleTimeoutSeconds
-	}
-	if p.JobTimeoutSeconds < 0 {
-		p.JobTimeoutSeconds = DefaultPromptQueueJobTimeoutSeconds
-	}
-	// JobTimeoutSeconds == 0 means disabled (explicit YAML or env).
 }
 
 func defaults() *Config {
@@ -163,9 +139,7 @@ func defaults() *Config {
 			Workspace:      ".",
 			ConnectTimeout: 30,
 			PromptQueue: PromptQueueConfig{
-				MaxQueued:          DefaultMaxQueued,
-				IdleTimeoutSeconds: DefaultPromptQueueIdleTimeoutSeconds,
-				JobTimeoutSeconds:  DefaultPromptQueueJobTimeoutSeconds,
+				MaxQueued: DefaultMaxQueued,
 			},
 		},
 		Permissions: PermissionsConfig{
@@ -240,16 +214,6 @@ func applyEnv(cfg *Config) error {
 	if v := getEnv("ACP_PROMPT_QUEUE_MAX_QUEUED"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Agent.PromptQueue.MaxQueued = n
-		}
-	}
-	if v := getEnv("ACP_PROMPT_QUEUE_IDLE_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Agent.PromptQueue.IdleTimeoutSeconds = n
-		}
-	}
-	if v := getEnv("ACP_PROMPT_QUEUE_JOB_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Agent.PromptQueue.JobTimeoutSeconds = n
 		}
 	}
 	if v := getEnv("WEIXIN_ENABLED"); v != "" {

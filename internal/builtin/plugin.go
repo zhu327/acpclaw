@@ -67,8 +67,6 @@ func (b *BuiltinPlugin) Init(fw domain.PluginContext) error {
 	b.executor = newPromptExecutor(b.sessionMgr, b.prompter, b.buildFirstPromptPrefix)
 	b.queue = newPromptQueueManager(
 		b.cfg.Agent.PromptQueue.MaxQueued,
-		idleReclaimDuration(b.cfg.Agent.PromptQueue),
-		nil,
 		context.Background(),
 		func(ctx context.Context, j *promptJob) {
 			b.completePromptJob(ctx, j)
@@ -342,13 +340,7 @@ func (b *BuiltinPlugin) ExecuteAction(
 }
 
 func (b *BuiltinPlugin) completePromptJob(ctx context.Context, job *promptJob) {
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if sec := b.cfg.Agent.PromptQueue.JobTimeoutSeconds; sec > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(sec)*time.Second)
-		defer cancel()
-	}
-	result := b.executor.runPromptJob(runCtx, job)
+	result := b.executor.runPromptJob(ctx, job)
 	if result != nil {
 		b.fw.RenderAndDispatch(ctx, result, job.tc.State, job.tc.Responder)
 	}

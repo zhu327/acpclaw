@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +26,7 @@ func drainPendingForTest(m *promptQueueManager, key string) int {
 
 func testQueue(t *testing.T, maxQueued int, run func(context.Context, *promptJob)) *promptQueueManager {
 	t.Helper()
-	return newPromptQueueManager(maxQueued, time.Hour, nil, context.Background(), run)
+	return newPromptQueueManager(maxQueued, context.Background(), run)
 }
 
 func TestPromptQueue_SubmitRejectsWhenFull(t *testing.T) {
@@ -77,36 +76,6 @@ func TestPromptQueue_DrainClearsPending(t *testing.T) {
 	assert.Equal(t, 2, n)
 
 	close(blocked)
-	q.Shutdown()
-}
-
-func TestPromptQueue_IdleReclaimAllowsResubmit(t *testing.T) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	runCount := 0
-	run := func(ctx context.Context, job *promptJob) {
-		mu.Lock()
-		runCount++
-		mu.Unlock()
-		wg.Done()
-	}
-	q := newPromptQueueManager(5, 25*time.Millisecond, nil, context.Background(), run)
-	chat := domain.ChatRef{ChannelKind: "test", ChatID: "idle1"}
-	tc := &domain.TurnContext{Chat: chat, State: domain.State{}}
-
-	wg.Add(1)
-	require.True(t, q.Submit(&promptJob{tc: tc}))
-	wg.Wait()
-
-	time.Sleep(60 * time.Millisecond)
-
-	wg.Add(1)
-	require.True(t, q.Submit(&promptJob{tc: tc}))
-	wg.Wait()
-
-	mu.Lock()
-	assert.Equal(t, 2, runCount)
-	mu.Unlock()
 	q.Shutdown()
 }
 
