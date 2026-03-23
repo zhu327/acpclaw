@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/zhu327/acpclaw/internal/domain"
 	weixinbot "github.com/zhu327/weixin-bot"
@@ -16,14 +18,25 @@ func (sharedResponderNoOps) ShowBusyNotification(string, int) (int, error)      
 func (sharedResponderNoOps) ClearBusyNotification(int) error                        { return nil }
 func (sharedResponderNoOps) ShowResumeKeyboard([]domain.SessionChoice) error        { return nil }
 
+// activityAccumulatorLimit 限制活动累加器文本长度（rune 数），为 MaxMessageTextRunes 留余量。
+const activityAccumulatorLimit = 1800
+
 // WeixinResponder implements domain.Responder for WeChat.
 // ctx 来自 SDK 的消息处理回调，responder 生命周期不应超过该 context。
+//
+// 活动消息采用流式累加器模式（参考 Telegram 的 EditMessage 方案）：
+// 多个 activity 块累加为一条 GENERATING 消息，最终回复时用 FINISH 终结，
+// 避免每个 activity 都发送独立消息导致对话刷屏。
 type WeixinResponder struct {
 	sharedResponderNoOps
 
 	ctx context.Context
 	bot *weixinbot.Bot
 	msg *weixinbot.IncomingMessage
+
+	mu           sync.Mutex
+	streamCID    string // 活动流的 client_id，用于 GENERATING → FINISH 序列
+	activityText string // 累加的活动文本
 }
 
 var _ domain.Responder = (*WeixinResponder)(nil)
@@ -36,12 +49,25 @@ func NewWeixinResponder(ctx context.Context, bot *weixinbot.Bot, msg *weixinbot.
 // ChannelKind returns the channel kind.
 func (r *WeixinResponder) ChannelKind() string { return "weixin" }
 
-// Reply sends an outbound message to the user.
+// Reply sends an outbound message to the user using SendRawMessage (Method B).
+// 先终结活动流（GENERATING → FINISH），再逐段发送正文，最后清除 typing。
 func (r *WeixinResponder) Reply(msg domain.OutboundMessage) error {
 	if msg.Text == "" {
 		return nil
 	}
-	return r.bot.Reply(r.ctx, r.msg, msg.Text)
+	r.mu.Lock()
+	r.finishActivityStreamLocked()
+	r.mu.Unlock()
+
+	ct := r.msg.ContextToken()
+	for _, chunk := range chunkRunes(msg.Text, weixinbot.MaxMessageTextRunes) {
+		cid, _ := weixinbot.GenerateClientID()
+		if err := r.bot.SendRawMessage(r.ctx, r.msg.UserID, chunk, ct, cid, weixinbot.MessageStateFinish); err != nil {
+			return err
+		}
+	}
+	_ = r.bot.StopTyping(r.ctx, r.msg.UserID)
+	return nil
 }
 
 // ShowTypingIndicator sends a typing indicator.
@@ -55,17 +81,50 @@ func (r *WeixinResponder) ShowTypingIndicator() error {
 	return err
 }
 
-// SendActivity sends an agent activity block as a plain text message.
-// Uses bot.Send() instead of bot.Reply() to avoid the StopTyping side-effect
-// that Reply() always triggers, which would create an extra HTTP round-trip per activity.
+// SendActivity sends an agent activity block using the streaming accumulator.
+// 多个 activity 累加为一条 GENERATING 消息（参考 Telegram 的 EditMessage 模式），
+// 避免每个 tool call / thinking 都发送独立消息导致刷屏。
+// 累加文本超限时，先 FINISH 当前流再开启新流。
 func (r *WeixinResponder) SendActivity(block domain.ActivityBlock) error {
-	text := block.FormatActivityText()
-	if text == "" {
+	line := block.FormatActivityText()
+	if line == "" {
 		return nil
 	}
-	// bot.Send() requires a cached context_token, which is set when the original
-	// incoming message was received. Safe to call after the first OnMessage dispatch.
-	return r.bot.Send(r.ctx, r.msg.UserID, text)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.activityText == "" {
+		r.activityText = line
+	} else if runeCount(r.activityText)+runeCount(line)+1 > activityAccumulatorLimit {
+		r.finishActivityStreamLocked()
+		r.activityText = line
+	} else {
+		r.activityText += "\n" + line
+	}
+
+	if r.streamCID == "" {
+		cid, _ := weixinbot.GenerateClientID()
+		r.streamCID = cid
+	}
+
+	ct := r.msg.ContextToken()
+	_ = r.bot.SendRawMessage(r.ctx, r.msg.UserID, r.activityText, ct, r.streamCID, weixinbot.MessageStateGenerating)
+	return nil
+}
+
+// finishActivityStreamLocked 终结当前活动流，将 GENERATING 切换为 FINISH。
+// 调用方必须持有 r.mu。
+func (r *WeixinResponder) finishActivityStreamLocked() {
+	if r.streamCID == "" {
+		return
+	}
+	if r.activityText != "" {
+		ct := r.msg.ContextToken()
+		_ = r.bot.SendRawMessage(r.ctx, r.msg.UserID, r.activityText, ct, r.streamCID, weixinbot.MessageStateFinish)
+	}
+	r.streamCID = ""
+	r.activityText = ""
 }
 
 // BackgroundResponder implements domain.Responder for background tasks (e.g. cron).
@@ -108,3 +167,31 @@ func (r *BackgroundResponder) Reply(msg domain.OutboundMessage) error {
 
 func (r *BackgroundResponder) ShowTypingIndicator() error              { return nil }
 func (r *BackgroundResponder) SendActivity(domain.ActivityBlock) error { return nil }
+
+func runeCount(s string) int { return len([]rune(s)) }
+
+// chunkRunes splits s into segments of at most limit UTF-8 code points.
+func chunkRunes(s string, limit int) []string {
+	if limit <= 0 {
+		return []string{s}
+	}
+	var out []string
+	for len(s) > 0 {
+		n := 0
+		runes := 0
+		for runes < limit && n < len(s) {
+			_, sz := utf8.DecodeRuneInString(s[n:])
+			if sz == 0 {
+				break
+			}
+			n += sz
+			runes++
+		}
+		out = append(out, s[:n])
+		s = s[n:]
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}

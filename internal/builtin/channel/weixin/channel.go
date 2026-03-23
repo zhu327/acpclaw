@@ -34,6 +34,7 @@ func (c *WeixinChannel) Start(ctx context.Context, handler domain.MessageHandler
 			return nil
 		}
 		resp := NewWeixinResponder(msgCtx, c.bot, msg)
+		_ = resp.ShowTypingIndicator()
 		handler(msgCtx, inbound, resp)
 		return nil
 	})

@@ -9,7 +9,7 @@ require (
 	github.com/mymmrac/telego v1.7.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.11.1
-	github.com/zhu327/weixin-bot v1.0.0
+	github.com/zhu327/weixin-bot v1.0.1
 	golang.org/x/net v0.51.0
 	golang.org/x/sync v0.20.0
 	gopkg.in/yaml.v3 v3.0.1
