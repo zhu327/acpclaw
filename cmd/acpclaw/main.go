@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,10 +17,12 @@ import (
 	"github.com/mymmrac/telego"
 	"github.com/zhu327/acpclaw/internal/builtin"
 	"github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
+	"github.com/zhu327/acpclaw/internal/builtin/channel/weixin"
 	"github.com/zhu327/acpclaw/internal/builtin/cron"
 	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/framework"
+	weixinbot "github.com/zhu327/weixin-bot"
 )
 
 const usageText = `Usage: acpclaw [command] [flags]
@@ -93,6 +96,19 @@ func run() error {
 		bp.PrepareTelegramChannel(bot, updates, fw)
 	}
 
+	// WeChat setup (conditional)
+	var wxBot *weixinbot.Bot
+	if cfg.Weixin.Enabled {
+		wxBot = weixinbot.New(
+			weixinbot.WithTokenPath(resolveWeixinTokenPath(cfg)),
+			weixinbot.WithLogger(slog.Default()),
+		)
+		if _, err := wxBot.Login(ctx, weixinbot.LoginOptions{}); err != nil {
+			return err
+		}
+		bp.PrepareWeixinChannel(wxBot)
+	}
+
 	if err := fw.Init(); err != nil {
 		return err
 	}
@@ -100,33 +116,51 @@ func run() error {
 	bp.StartBackgroundTasks(ctx)
 
 	if cfg.Cron.Enabled {
-		startCronScheduler(ctx, cfg, bot, fw)
+		startCronScheduler(ctx, cfg, bot, wxBot, fw)
 	}
 
 	slog.Info("bot started", "workspace", cfg.Agent.Workspace)
 	return fw.Start(ctx)
 }
 
-func startCronScheduler(ctx context.Context, cfg *config.Config, bot *telego.Bot, fw *framework.Framework) {
+func startCronScheduler(
+	ctx context.Context,
+	cfg *config.Config,
+	tgBot *telego.Bot,
+	wxBot *weixinbot.Bot,
+	fw *framework.Framework,
+) {
 	cronDir := config.GetAcpclawCronDir()
 	cronStore := cron.NewStore(cronDir)
 	scheduler := cron.NewScheduler(cronStore, 30*time.Second)
 	scheduler.OnTrigger(func(job domain.CronJob) {
-		if job.Channel != "telegram" {
+		switch job.Channel {
+		case "telegram":
+			if tgBot == nil {
+				slog.Warn("telegram not configured for cron job", "id", job.ID, "chat_id", job.ChatID)
+				return
+			}
+			chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
+			resp := telegram.NewBackgroundResponder(ctx, tgBot, chatIDInt)
+			msg := domain.InboundMessage{
+				ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
+				Text:    job.Message,
+			}
+			_ = fw.ProcessInbound(ctx, msg, resp)
+		case "weixin":
+			if wxBot == nil {
+				slog.Warn("weixin not configured for cron job", "id", job.ID, "chat_id", job.ChatID)
+				return
+			}
+			resp := weixin.NewBackgroundResponder(ctx, wxBot, job.ChatID)
+			msg := domain.InboundMessage{
+				ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
+				Text:    job.Message,
+			}
+			_ = fw.ProcessInbound(ctx, msg, resp)
+		default:
 			slog.Warn("unsupported cron job channel", "channel", job.Channel, "id", job.ID)
-			return
 		}
-		if bot == nil {
-			slog.Warn("telegram not configured for cron job", "id", job.ID, "chat_id", job.ChatID)
-			return
-		}
-		chatIDInt, _ := strconv.ParseInt(job.ChatID, 10, 64)
-		resp := telegram.NewBackgroundResponder(ctx, bot, chatIDInt)
-		msg := domain.InboundMessage{
-			ChatRef: domain.ChatRef{ChannelKind: job.Channel, ChatID: job.ChatID},
-			Text:    job.Message,
-		}
-		_ = fw.ProcessInbound(ctx, msg, resp)
 	})
 	go scheduler.Start(ctx)
 	slog.Info("cron scheduler started", "dir", cronDir)
@@ -159,4 +193,11 @@ func initLogging(cfg *config.Config) {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(handler))
+}
+
+func resolveWeixinTokenPath(cfg *config.Config) string {
+	if cfg.Weixin.TokenPath != "" {
+		return cfg.Weixin.TokenPath
+	}
+	return filepath.Join(config.GetAcpclawBaseDir(), "weixin-bot", "credentials.json")
 }

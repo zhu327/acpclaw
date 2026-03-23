@@ -1,24 +1,24 @@
 # acpclaw
 
-Turn any [ACP (Agent Client Protocol)](https://agentclientprotocol.com/) compatible coding agent into your personal assistant — chat with AI agents through messaging apps like Telegram, anytime, anywhere. What was once locked inside your terminal becomes an always-on assistant with persistent memory and scheduled tasks.
+Turn any [ACP (Agent Client Protocol)](https://agentclientprotocol.com/) compatible coding agent into your personal assistant — chat with AI agents through messaging apps like Telegram or WeChat, anytime, anywhere. What was once locked inside your terminal becomes an always-on assistant with persistent memory and scheduled tasks.
 
 ## Why acpclaw?
 
 Coding agents like Claude Code and OpenCode are incredibly powerful, but they're trapped in terminals and IDEs. acpclaw sets them free:
 
-- **Always reachable** — Talk to your agent on the go via Telegram, no laptop required
+- **Always reachable** — Talk to your agent on the go via Telegram or WeChat, no laptop required
 - **Persistent memory** — The agent remembers your preferences, project context, and contacts across sessions
-- **Multi-channel** — Connect via Telegram chat
+- **Multi-channel** — Connect via Telegram or WeChat; both channels can run simultaneously
 - **Multi-session** — Maintain sessions across multiple workspaces, switch anytime
 
 ## How It Works
 
 ```
-Telegram ↔ acpclaw ↔ ACP Agent (e.g. opencode, cursor agent cli)
-                          ↓
-                Built-in MCP Server
-                - Memory tools
-                - Cron tools
+Telegram / WeChat ↔ acpclaw ↔ ACP Agent (e.g. opencode, cursor agent cli)
+                                    ↓
+                           Built-in MCP Server
+                           - Memory tools
+                           - Cron tools
 ```
 
 acpclaw sits between the messaging channel and the ACP agent subprocess. It manages the agent lifecycle via ACP, and exposes memory tools to the agent via MCP — enabling the agent to autonomously read/write memories across sessions.
@@ -52,6 +52,10 @@ telegram:
   token: "YOUR_BOT_TOKEN"           # Telegram bot token
   allowed_user_ids: []              # restrict by user ID (empty = allow all)
   proxy: ""                         # optional: socks5://host:port or http://host:port
+
+weixin:
+  enabled: false                    # set true to enable WeChat channel
+  token_path: ""                    # optional: credentials file path
 
 agent:
   command: "opencode acp"           # any ACP-compatible agent command
@@ -96,6 +100,36 @@ Test without a real agent:
 ### Telegram
 
 Set `telegram.enabled: true` and provide a bot token. Optionally restrict access via `allowed_user_ids` and configure a proxy if needed.
+
+```yaml
+telegram:
+  enabled: true
+  token: "YOUR_BOT_TOKEN"
+  allowed_user_ids: []        # restrict by user ID (empty = allow all)
+  proxy: ""                   # optional: socks5://host:port or http://host:port
+```
+
+### WeChat (微信)
+
+Set `weixin.enabled: true`. On first launch, a QR code is printed to the terminal — scan it with WeChat to log in. Credentials are cached so subsequent restarts skip the QR step.
+
+```yaml
+weixin:
+  enabled: true
+  token_path: ""    # optional: path to credentials file (default: ~/.acpclaw/weixin-bot/credentials.json)
+```
+
+**Important: enable `approve` mode for permissions.**
+
+WeChat does not support inline buttons or rich UI, so the agent cannot interactively ask for tool-use approval mid-conversation. Set `permissions.mode: "approve"` to automatically approve all tool calls, otherwise the agent will stall waiting for a permission UI that WeChat cannot display:
+
+```yaml
+permissions:
+  mode: "approve"     # required for WeChat — "ask" mode blocks indefinitely
+  event_output: "stdout"
+```
+
+> Both Telegram and WeChat can be enabled simultaneously. Each channel runs independently and shares the same agent and memory backend.
 
 ## Memory System
 
@@ -166,6 +200,7 @@ acpclaw/
 │   ├── builtin/                 # Built-in plugin implementation
 │   │   ├── agent/               # ACP agent client and session management
 │   │   ├── channel/telegram/    # Telegram channel adapter
+│   │   ├── channel/weixin/      # WeChat channel adapter
 │   │   ├── commands/            # Slash commands (/new, /resume, etc.)
 │   │   ├── memory/              # Memory service (knowledge base, history)
 │   │   └── mcp/                 # MCP tool implementations

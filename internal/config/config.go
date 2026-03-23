@@ -13,6 +13,7 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	Telegram    TelegramConfig    `yaml:"telegram"`
+	Weixin      WeixinConfig      `yaml:"weixin"`
 	Agent       AgentConfig       `yaml:"agent"`
 	Permissions PermissionsConfig `yaml:"permissions"`
 	Logging     LoggingConfig     `yaml:"logging"`
@@ -39,6 +40,12 @@ type TelegramConfig struct {
 	AllowedUsernames []string `yaml:"allowed_usernames"`
 	// Proxy is the proxy URL, e.g. socks5://host:port or http://host:port
 	Proxy string `yaml:"proxy"`
+}
+
+// WeixinConfig holds WeChat bot configuration.
+type WeixinConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	TokenPath string `yaml:"token_path"`
 }
 
 // DefaultMaxQueued is the default cap on prompts waiting behind the in-flight one per chat.
@@ -110,8 +117,8 @@ func (c *Config) Validate() error {
 	if !c.Telegram.Enabled && strings.TrimSpace(c.Telegram.Token) != "" {
 		slog.Warn("telegram token is set but channel is not enabled; set TELEGRAM_ENABLED=true to activate")
 	}
-	if !c.Telegram.Enabled {
-		return fmt.Errorf("telegram channel must be configured (TELEGRAM_ENABLED + TELEGRAM_BOT_TOKEN)")
+	if !c.Telegram.Enabled && !c.Weixin.Enabled {
+		return fmt.Errorf("at least one channel must be enabled (TELEGRAM_ENABLED or WEIXIN_ENABLED)")
 	}
 	if strings.TrimSpace(c.Agent.Command) == "" {
 		return fmt.Errorf("agent command is required (ACP_AGENT_COMMAND)")
@@ -244,6 +251,12 @@ func applyEnv(cfg *Config) error {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Agent.PromptQueue.JobTimeoutSeconds = n
 		}
+	}
+	if v := getEnv("WEIXIN_ENABLED"); v != "" {
+		cfg.Weixin.Enabled = parseBoolEnv(v)
+	}
+	if v := getEnv("WEIXIN_TOKEN_PATH"); v != "" {
+		cfg.Weixin.TokenPath = v
 	}
 	return nil
 }

@@ -18,12 +18,14 @@ import (
 	"github.com/mymmrac/telego"
 	"github.com/zhu327/acpclaw/internal/builtin/agent"
 	tgchannel "github.com/zhu327/acpclaw/internal/builtin/channel/telegram"
+	wxchannel "github.com/zhu327/acpclaw/internal/builtin/channel/weixin"
 	"github.com/zhu327/acpclaw/internal/builtin/commands"
 	"github.com/zhu327/acpclaw/internal/builtin/memory"
 	"github.com/zhu327/acpclaw/internal/config"
 	"github.com/zhu327/acpclaw/internal/domain"
 	"github.com/zhu327/acpclaw/internal/framework"
 	"github.com/zhu327/acpclaw/internal/templates"
+	weixinbot "github.com/zhu327/weixin-bot"
 	"golang.org/x/net/proxy"
 )
 
@@ -41,6 +43,7 @@ type BuiltinPlugin struct {
 	modelMgr    domain.ModelManager
 	modeMgr     domain.ModeManager
 	tgChannel   *tgchannel.TelegramChannel
+	wxChannel   *wxchannel.WeixinChannel
 	resumeStore commands.ResumeChoicesStore
 	executor    *promptExecutor
 	queue       *promptQueueManager
@@ -189,10 +192,14 @@ func permDecisionsToStrings(d []domain.PermissionDecision) []string {
 
 // Channels implements domain.ChannelProvider.
 func (b *BuiltinPlugin) Channels() []domain.Channel {
+	var channels []domain.Channel
 	if b.tgChannel != nil {
-		return []domain.Channel{b.tgChannel}
+		channels = append(channels, b.tgChannel)
 	}
-	return nil
+	if b.wxChannel != nil {
+		channels = append(channels, b.wxChannel)
+	}
+	return channels
 }
 
 func (b *BuiltinPlugin) defaultWorkspace() string {
@@ -315,7 +322,7 @@ func (b *BuiltinPlugin) ExecuteAction(
 	}
 	job := &promptJob{action: action, tc: tc}
 	if !b.queue.Submit(job) {
-		if tgchannel.IsBackgroundResponder(tc.Responder) {
+		if tgchannel.IsBackgroundResponder(tc.Responder) || wxchannel.IsBackgroundResponder(tc.Responder) {
 			logQueueFullRejected(tc.Chat, "cron")
 			return &domain.Result{SuppressOutbound: true}, nil
 		}
@@ -649,4 +656,9 @@ func (b *BuiltinPlugin) buildTelegramChannel(
 	allowlist := tgchannel.AllowlistConfig{AllowedUserIDs: ids, AllowedUsernames: names}
 	channelCfg := tgchannel.ChannelConfig{AllowedUserIDs: ids, AllowedUsernames: names}
 	return tgchannel.NewTelegramChannel(bot, updates, channelCfg, fw, tgchannel.NewAllowlistChecker(allowlist))
+}
+
+// PrepareWeixinChannel creates and sets the WeChat channel. Call before Framework.Init().
+func (b *BuiltinPlugin) PrepareWeixinChannel(bot *weixinbot.Bot) {
+	b.wxChannel = wxchannel.NewWeixinChannel(bot)
 }

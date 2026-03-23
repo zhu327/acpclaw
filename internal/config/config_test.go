@@ -107,7 +107,7 @@ func TestLoad_InvalidAllowedUsersFromEnv(t *testing.T) {
 func TestValidate_MissingToken(t *testing.T) {
 	cfg := &config.Config{}
 	err := cfg.Validate()
-	assert.ErrorContains(t, err, "telegram channel must be configured")
+	assert.ErrorContains(t, err, "at least one channel")
 }
 
 func TestValidate_TelegramEnabledMissingToken(t *testing.T) {
@@ -178,4 +178,59 @@ func TestConfig_ValidatePermissionEventOutput(t *testing.T) {
 	err := cfg.Validate()
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "invalid permission event_output")
+}
+
+func TestLoad_WeixinDefaults(t *testing.T) {
+	cfg, err := config.Load("")
+	require.NoError(t, err)
+	assert.False(t, cfg.Weixin.Enabled)
+	assert.Empty(t, cfg.Weixin.TokenPath)
+}
+
+func TestLoad_WeixinFromYAML(t *testing.T) {
+	yaml := `
+telegram:
+  enabled: false
+weixin:
+  enabled: true
+  token_path: "/custom/path/credentials.json"
+agent:
+  command: "codex"
+`
+	f := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(f, []byte(yaml), 0o600))
+
+	cfg, err := config.Load(f)
+	require.NoError(t, err)
+	assert.True(t, cfg.Weixin.Enabled)
+	assert.Equal(t, "/custom/path/credentials.json", cfg.Weixin.TokenPath)
+}
+
+func TestLoad_WeixinEnvOverride(t *testing.T) {
+	t.Setenv("WEIXIN_ENABLED", "true")
+	t.Setenv("WEIXIN_TOKEN_PATH", "/env/path/credentials.json")
+
+	cfg, err := config.Load("")
+	require.NoError(t, err)
+	assert.True(t, cfg.Weixin.Enabled)
+	assert.Equal(t, "/env/path/credentials.json", cfg.Weixin.TokenPath)
+}
+
+func TestValidate_WeixinOnlyNoTelegram(t *testing.T) {
+	cfg := &config.Config{
+		Weixin:      config.WeixinConfig{Enabled: true},
+		Agent:       config.AgentConfig{Command: "codex"},
+		Permissions: config.PermissionsConfig{Mode: "ask"},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidate_NeitherChannelEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Agent:       config.AgentConfig{Command: "codex"},
+		Permissions: config.PermissionsConfig{Mode: "ask"},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "at least one channel")
 }

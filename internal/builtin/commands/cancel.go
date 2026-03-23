@@ -16,7 +16,9 @@ type CancelCommand struct {
 
 // NewCancelCommand creates a CancelCommand. cancelAndDrain atomically flags cancel, drains queued
 // prompts for the chat, then cancels the running agent prompt (if any). May be nil for tests.
-func NewCancelCommand(cancelAndDrain func(ctx context.Context, chat domain.ChatRef) (drained int, err error)) *CancelCommand {
+func NewCancelCommand(
+	cancelAndDrain func(ctx context.Context, chat domain.ChatRef) (drained int, err error),
+) *CancelCommand {
 	return &CancelCommand{cancelAndDrain: cancelAndDrain}
 }
 
@@ -33,19 +35,25 @@ func (c *CancelCommand) Execute(ctx context.Context, args []string, tc *domain.T
 	}
 	if err == nil {
 		if n > 0 {
-			return &domain.Result{Text: fmt.Sprintf("Cancelled the current operation and cleared %d queued message(s).", n)}, nil
+			return &domain.Result{
+				Text: fmt.Sprintf("Cancelled the current operation and cleared %d queued message(s).", n),
+			}, nil
 		}
 		return &domain.Result{Text: "Cancelled current operation."}, nil
 	}
 	if errors.Is(err, domain.ErrNoActiveSession) {
 		if n > 0 {
-			return &domain.Result{Text: fmt.Sprintf("Cleared %d queued message(s). No active agent session to cancel.", n)}, nil
+			return &domain.Result{
+				Text: fmt.Sprintf("Cleared %d queued message(s). No active agent session to cancel.", n),
+			}, nil
 		}
 		return &domain.Result{Text: "No active session. Use /new first."}, nil
 	}
 	slog.Error("cancel prompt failed", "chat", tc.Chat.CompositeKey(), "error", err)
 	if n > 0 {
-		return &domain.Result{Text: fmt.Sprintf("Cleared %d queued message(s), but could not cancel the running task. Try again.", n)}, nil
+		return &domain.Result{
+			Text: fmt.Sprintf("Cleared %d queued message(s), but could not cancel the running task. Try again.", n),
+		}, nil
 	}
 	return &domain.Result{Text: "❌ Failed to cancel current task."}, nil
 }
