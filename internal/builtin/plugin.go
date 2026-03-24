@@ -457,7 +457,7 @@ func extractTitleFromSummary(summary string) string {
 
 const (
 	minTranscriptLen = 100 // byte length; ~33 CJK chars or ~100 ASCII chars
-	summarizeTimeout = 30 * time.Second
+	summarizeTimeout = 60 * time.Second
 )
 
 func (b *BuiltinPlugin) buildBeforeSessionSwitch() func(ctx context.Context, chat domain.ChatRef) {
@@ -471,7 +471,7 @@ func (b *BuiltinPlugin) buildBeforeSessionSwitch() func(ctx context.Context, cha
 }
 
 func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(
-	ctx context.Context,
+	_ context.Context,
 	chat domain.ChatRef,
 	summarizer *agent.AgentSummarizer,
 ) {
@@ -485,9 +485,13 @@ func (b *BuiltinPlugin) summarizeSessionBeforeSwitch(
 		return
 	}
 	if len(transcript) < minTranscriptLen {
+		slog.Debug("transcript too short for summarization", "chat", chatKey, "len", len(transcript))
 		return
 	}
-	sumCtx, cancel := context.WithTimeout(ctx, summarizeTimeout)
+	// Use background context: the inbound message context may carry a short ACK
+	// deadline (e.g. WPS event SDK), but summarization requires LLM inference and
+	// may also block on the per-chat prompt lock if a prompt is in flight.
+	sumCtx, cancel := context.WithTimeout(context.Background(), summarizeTimeout)
 	defer cancel()
 	summary, err := summarizer.Summarize(sumCtx, chat, transcript)
 	if err != nil {
