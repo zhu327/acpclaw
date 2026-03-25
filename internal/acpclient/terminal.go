@@ -46,6 +46,16 @@ func (t *terminal) snapshot() (output string, truncated bool, exitStatus *acpsdk
 	return
 }
 
+// killProcessGroup sends a signal to the entire process group led by the terminal process.
+// Because each terminal is started with Setpgid: true, the process and all its children
+// share the same pgid. Negative PID in syscall.Kill targets the whole group.
+func (t *terminal) killProcessGroup() {
+	if t.cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-t.cmd.Process.Pid, syscall.SIGKILL)
+}
+
 // terminalWriter is an io.Writer that feeds bytes into a terminal's buffer.
 type terminalWriter struct{ t *terminal }
 
@@ -201,9 +211,7 @@ func (m *TerminalManager) Kill(req acpsdk.KillTerminalCommandRequest) (acpsdk.Ki
 	if t == nil {
 		return acpsdk.KillTerminalCommandResponse{}, fmt.Errorf("terminal not found: %s", req.TerminalId)
 	}
-	if t.cmd.Process != nil {
-		_ = t.cmd.Process.Kill()
-	}
+	t.killProcessGroup()
 	return acpsdk.KillTerminalCommandResponse{}, nil
 }
 
@@ -218,11 +226,11 @@ func (m *TerminalManager) Release(req acpsdk.ReleaseTerminalRequest) (acpsdk.Rel
 	}
 	m.mu.Unlock()
 
-	if t != nil && t.cmd.Process != nil {
+	if t != nil {
 		select {
 		case <-t.done:
 		default:
-			_ = t.cmd.Process.Kill()
+			t.killProcessGroup()
 		}
 	}
 	return acpsdk.ReleaseTerminalResponse{}, nil
@@ -236,12 +244,10 @@ func (m *TerminalManager) ReleaseSession(sessionID string) {
 	m.mu.Unlock()
 
 	for _, t := range terminals {
-		if t.cmd.Process != nil {
-			select {
-			case <-t.done:
-			default:
-				_ = t.cmd.Process.Kill()
-			}
+		select {
+		case <-t.done:
+		default:
+			t.killProcessGroup()
 		}
 	}
 }
