@@ -138,12 +138,20 @@ func NewAcpClient(
 	}
 }
 
-// ReleaseSessionTerminals cleans up terminal subprocesses for a session.
+// ReleaseSessionTerminals kills and drops all terminals tracked for sessionID.
 func (c *AcpClient) ReleaseSessionTerminals(sessionID string) {
 	if c.terminals == nil {
 		return
 	}
 	c.terminals.ReleaseSession(sessionID)
+}
+
+// StopTerminals stops the background terminal reaper (e.g. on client teardown).
+func (c *AcpClient) StopTerminals() {
+	if c.terminals == nil {
+		return
+	}
+	c.terminals.Stop()
 }
 
 // SetCallbacks atomically replaces both activity and permission callbacks.

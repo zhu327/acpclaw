@@ -4,11 +4,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
+)
+
+const (
+	// terminalIdleTimeout is how long an exited terminal may sit idle (no Output/WaitForExit)
+	// after exit before the reaper deletes it. Idle time is max(exitTime, lastAccess).
+	terminalIdleTimeout = 5 * time.Minute
+	reaperInterval      = 30 * time.Second
 )
 
 // terminal holds a running subprocess and its buffered output.
@@ -19,7 +28,29 @@ type terminal struct {
 	done       chan struct{}
 	exitCode   *int
 	exitSignal *string
-	limit      int // max output bytes to retain; 0 = unlimited
+	exitTime   time.Time // when cmd.Wait returned; zero while running
+	lastAccess time.Time // last Output / WaitForExit call; zero until first access
+	limit      int       // max output bytes to retain; 0 = unlimited
+}
+
+// touch records the current time as the last access.
+func (t *terminal) touch() {
+	t.mu.Lock()
+	t.lastAccess = time.Now()
+	t.mu.Unlock()
+}
+
+// idleSince is the later of exitTime and lastAccess once exited; zero while still running.
+func (t *terminal) idleSince() time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.exitTime.IsZero() {
+		return time.Time{}
+	}
+	if t.lastAccess.After(t.exitTime) {
+		return t.lastAccess
+	}
+	return t.exitTime
 }
 
 func (t *terminal) appendOutput(p []byte) {
@@ -46,9 +77,7 @@ func (t *terminal) snapshot() (output string, truncated bool, exitStatus *acpsdk
 	return
 }
 
-// killProcessGroup sends a signal to the entire process group led by the terminal process.
-// Because each terminal is started with Setpgid: true, the process and all its children
-// share the same pgid. Negative PID in syscall.Kill targets the whole group.
+// killProcessGroup SIGKILLs the whole process group (Setpgid: true → kill negative pid).
 func (t *terminal) killProcessGroup() {
 	if t.cmd.Process == nil {
 		return
@@ -68,12 +97,60 @@ func (w *terminalWriter) Write(p []byte) (int, error) {
 type TerminalManager struct {
 	mu       sync.Mutex
 	sessions map[string]map[string]*terminal // sessionID → terminalID → terminal
+	stopOnce sync.Once
+	stopCh   chan struct{}
 }
 
-// NewTerminalManager creates a new TerminalManager.
+// NewTerminalManager creates a new TerminalManager and starts a background
+// reaper that removes terminated terminals after terminalIdleTimeout.
 func NewTerminalManager() *TerminalManager {
-	return &TerminalManager{
+	m := &TerminalManager{
 		sessions: make(map[string]map[string]*terminal),
+		stopCh:   make(chan struct{}),
+	}
+	go m.reapLoop()
+	return m
+}
+
+// Stop shuts down the background reaper. Safe to call multiple times.
+func (m *TerminalManager) Stop() {
+	m.stopOnce.Do(func() { close(m.stopCh) })
+}
+
+// reapLoop periodically removes terminals that have been idle (exited and
+// not accessed) for longer than terminalIdleTimeout.
+func (m *TerminalManager) reapLoop() {
+	ticker := time.NewTicker(reaperInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+			m.reapExpired()
+		}
+	}
+}
+
+func (m *TerminalManager) reapExpired() {
+	now := time.Now()
+	// Lock order: always m.mu before t.mu (via idleSince); never the reverse.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for sid, terms := range m.sessions {
+		for tid, t := range terms {
+			idle := t.idleSince()
+			if idle.IsZero() || now.Sub(idle) <= terminalIdleTimeout {
+				continue
+			}
+			slog.Debug("reaping idle terminal",
+				"session_id", sid, "terminal_id", tid,
+				"idle_for", now.Sub(idle).Round(time.Second))
+			delete(terms, tid)
+		}
+		if len(terms) == 0 {
+			delete(m.sessions, sid)
+		}
 	}
 }
 
@@ -146,13 +223,13 @@ func (m *TerminalManager) Create(req acpsdk.CreateTerminalRequest) (acpsdk.Creat
 					t.exitCode = &c
 				}
 			} else {
-				// Non-exit error (e.g. process killed): treat as exit code 1
 				c := 1
 				t.exitCode = &c
 			}
 		} else {
 			t.exitCode = &code
 		}
+		t.exitTime = time.Now()
 		t.mu.Unlock()
 		close(t.done)
 	}()
@@ -165,11 +242,15 @@ func (m *TerminalManager) Create(req acpsdk.CreateTerminalRequest) (acpsdk.Creat
 }
 
 // Output returns the current output and exit status of a terminal.
+//
+// Benign TOCTOU: get() then touch() can race with the reaper removing the map
+// entry; the *terminal remains valid and the idle timeout makes this rare.
 func (m *TerminalManager) Output(req acpsdk.TerminalOutputRequest) (acpsdk.TerminalOutputResponse, error) {
 	t := m.get(string(req.SessionId), req.TerminalId)
 	if t == nil {
 		return acpsdk.TerminalOutputResponse{}, fmt.Errorf("terminal not found: %s", req.TerminalId)
 	}
+	t.touch()
 	output, truncated, exitStatus := t.snapshot()
 	// TerminalOutputResponse.Output is required (non-empty per Validate), use a space if empty.
 	if output == "" {
@@ -182,7 +263,7 @@ func (m *TerminalManager) Output(req acpsdk.TerminalOutputRequest) (acpsdk.Termi
 	}, nil
 }
 
-// WaitForExit blocks until the terminal exits or ctx is cancelled.
+// WaitForExit blocks until the terminal exits or ctx is cancelled (same TOCTOU as Output).
 func (m *TerminalManager) WaitForExit(
 	ctx context.Context,
 	req acpsdk.WaitForTerminalExitRequest,
@@ -196,13 +277,13 @@ func (m *TerminalManager) WaitForExit(
 	case <-ctx.Done():
 		return acpsdk.WaitForTerminalExitResponse{}, ctx.Err()
 	}
+	t.touch()
 	t.mu.Lock()
-	resp := acpsdk.WaitForTerminalExitResponse{
+	defer t.mu.Unlock()
+	return acpsdk.WaitForTerminalExitResponse{
 		ExitCode: t.exitCode,
 		Signal:   t.exitSignal,
-	}
-	t.mu.Unlock()
-	return resp, nil
+	}, nil
 }
 
 // Kill sends SIGKILL to the terminal process.
@@ -243,10 +324,16 @@ func (m *TerminalManager) ReleaseSession(sessionID string) {
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
 
-	for _, t := range terminals {
+	if len(terminals) > 0 {
+		slog.Debug("releasing session terminals",
+			"session_id", sessionID, "count", len(terminals))
+	}
+	for tid, t := range terminals {
 		select {
 		case <-t.done:
 		default:
+			slog.Debug("killing running terminal during session release",
+				"session_id", sessionID, "terminal_id", tid)
 			t.killProcessGroup()
 		}
 	}

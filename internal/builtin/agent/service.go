@@ -100,15 +100,9 @@ func (s *AcpAgentService) ActiveSession(chat domain.ChatRef) *domain.SessionInfo
 	return &domain.SessionInfo{SessionID: live.sessionID, Workspace: live.workspace}
 }
 
-// promptLockFor returns the per-chat mutex that serializes Prompt calls.
-//
-// Two-lock design: promptLock and sessionLock are intentionally separate.
-//   - promptLock (this one) serializes concurrent Prompt calls for the same chat.
-//   - sessionLock (see sessionLockFor) guards session lifecycle: NewSession/LoadSession/Reconnect.
-//
-// This means Reconnect can concurrently interrupt an in-flight Prompt: killing the agent
-// subprocess causes live.conn.Prompt to return an I/O error, which Prompt returns to
-// the caller. This is the intended cancellation path — do not merge the two locks.
+// promptLockFor serializes Prompt per chat. sessionLockFor serializes NewSession/LoadSession/Reconnect.
+// Keeping them separate lets Reconnect tear down the process while Prompt is in flight (I/O cancel);
+// do not merge into one mutex.
 func (s *AcpAgentService) promptLockFor(key string) *sync.Mutex {
 	v, _ := s.promptLocks.LoadOrStore(key, &sync.Mutex{})
 	return v.(*sync.Mutex)
@@ -195,6 +189,14 @@ func (s *AcpAgentService) LoadSession(ctx context.Context, chat domain.ChatRef, 
 			return fmt.Errorf("%w: %s", domain.ErrSessionNotFound, sessionID)
 		}
 		return err
+	}
+
+	if live.sessionID != "" && live.sessionID != sessionID && live.client != nil {
+		slog.Debug("releasing terminals before loading session",
+			"chat", key,
+			"old_session_id", live.sessionID,
+			"new_session_id", sessionID)
+		live.client.ReleaseSessionTerminals(live.sessionID)
 	}
 
 	s.mu.Lock()

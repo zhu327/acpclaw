@@ -70,6 +70,7 @@ func stopLiveSession(live *liveSession) {
 	}
 	if live.client != nil {
 		live.client.ReleaseSessionTerminals(live.sessionID)
+		live.client.StopTerminals()
 	}
 	if live.cmd == nil || live.cmd.Process == nil {
 		return

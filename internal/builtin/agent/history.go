@@ -38,8 +38,8 @@ func upsertCappedSessionHistory(history []domain.SessionInfo, info domain.Sessio
 
 func (s *AcpAgentService) attachSession(chatID string, live *liveSession) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.liveByChat[chatID] = live
-	s.mu.Unlock()
 }
 
 func (s *AcpAgentService) removeSessionFromHistory(chatID string, sessionID string) {
@@ -74,6 +74,14 @@ func (s *AcpAgentService) createNewSession(
 	})
 	if err != nil {
 		return err
+	}
+
+	if live.sessionID != "" && live.client != nil {
+		slog.Debug("releasing terminals from previous session",
+			"chat_id", chatID,
+			"old_session_id", live.sessionID,
+			"new_session_id", string(newSess.SessionId))
+		live.client.ReleaseSessionTerminals(live.sessionID)
 	}
 
 	s.mu.Lock()
