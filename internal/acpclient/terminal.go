@@ -16,7 +16,7 @@ import (
 const (
 	// terminalIdleTimeout is how long an exited terminal may sit idle (no Output/WaitForExit)
 	// after exit before the reaper deletes it. Idle time is max(exitTime, lastAccess).
-	terminalIdleTimeout = 5 * time.Minute
+	terminalIdleTimeout = 10 * time.Minute
 	reaperInterval      = 30 * time.Second
 )
 
